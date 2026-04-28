@@ -216,18 +216,30 @@ def _get_running_deployment(
 
 def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
     """Make a blocking proxy request to a backend container."""
-    with httpx.Client() as client:
-        response = client.post(url, json=body)
-    return JSONResponse(
-        status_code=response.status_code,
-        content=response.json() if response.status_code != 204 else {},
-    )
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(url, json=body)
+        return JSONResponse(
+            status_code=response.status_code,
+            content=response.json() if response.status_code != 204 else {},
+        )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "request timeout"},
+        )
+    except httpx.ConnectError:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "backend unavailable"},
+        )
 
 
-def _streaming_proxy(url: str, body: dict[str, Any]) -> StreamingResponse:
+def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     """Stream SSE response from backend to client transparently."""
-    with httpx.Client() as client:
-        response = client.post(url, json=body, timeout=5.0)
+    try:
+        with httpx.Client(timeout=10.0) as client:
+            response = client.post(url, json=body)
 
         def _generate() -> Any:
             yield from response.iter_bytes()
@@ -236,6 +248,16 @@ def _streaming_proxy(url: str, body: dict[str, Any]) -> StreamingResponse:
             _generate(),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
+        )
+    except httpx.TimeoutException:
+        return JSONResponse(
+            status_code=504,
+            content={"detail": "request timeout"},
+        )
+    except httpx.ConnectError:
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "backend unavailable"},
         )
 
 
