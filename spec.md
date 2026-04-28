@@ -19,6 +19,7 @@ This system is not an inference engine. It is a control and routing layer.
 - No database (file-based config only)
 - No UI
 - No implicit model loading
+- No config hot-reload (restart required for config changes)
 - No batching or performance optimization layer
 
 ---
@@ -78,21 +79,24 @@ POST /models/load
 - Input: { model: string }
 - Behavior:
   - Starts container via backend adapter
-  - Waits for /health or returns immediately
+  - Returns immediately (202 Accepted)
+  - Status transitions to `loading`, then `running` or `error` on health check
+  - Health check runs asynchronously; poll via `GET /models/{model}/status`
 
 POST /models/unload
 
 - Input: { model: string }
 - Behavior:
   - Stops container
+  - Removes container immediately after stop
 
 GET /models
 
-- Returns list of configured models and status
+- Returns list of configured models with status, backend, port, and `started_at`
 
 GET /models/{model}/status
 
-- Returns: running | stopped | loading
+- Returns: `running` | `stopped` | `loading` | `error`
 
 ---
 
@@ -104,7 +108,9 @@ POST /v1/chat/completions
 - Requires: model
 - Behavior:
   - Routes to backend endpoint
-  - Returns raw or lightly normalized response
+  - Returns response (normalized only where necessary)
+
+**Streaming:** Control plane acts as transparent proxy for SSE streams. Forwards `Transfer-Encoding: chunked` with no buffering. Timeout applies to initial connection only, not the stream lifetime.
 
 ---
 
@@ -125,13 +131,21 @@ POST /v1/backends/{model}/{path...}
 ### 6.1 Structure
 
 ```
+global:
+  docker_network: model-runtime
+  base_port: 8000
+  log_level: info
+
 models:
   qwen-32b:
     backend: vllm
+    image: vllm/vllm-openai:latest
 
     control:
       auto_start: false
-      health_timeout: 120
+
+    resources:
+      memory: 32g
 
     runtime:
       repo: Qwen/Qwen2-32B-Instruct
@@ -139,6 +153,7 @@ models:
 
   mistral-7b-gguf:
     backend: koboldcpp
+    image: something/mistral-kobold:latest
 
     control:
       auto_start: false
@@ -226,13 +241,16 @@ Example:
 
 ### 10.2 Port Strategy
 
-MVP:
+- Base port: `8000` (configurable via `global.base_port` or environment variable)
+- Allocation: sequential from base port, skip ports already in use
+- Tracking: in-memory map of model → port
+- Release: port returns to pool on container stop
 
-- static or simple incrementing port allocator
+### 10.3 Container Cleanup
 
-Future:
-
-- dynamic pool with reuse
+- Containers removed immediately on explicit unload
+- Crashed containers left in place for log inspection
+- Cleanup of crashed containers occurs on next startup during orphan detection
 
 ---
 
@@ -245,30 +263,35 @@ MVP:
 Tracks:
 
 - running deployments
-- model -> deployment mapping
+- model → deployment mapping
 - ports
 
-No persistence required.
+No persistence required. A control plane restart loses in-memory state; orphan detection (below) recovers running containers.
+
+## 12. Startup and Bootstrap
+
+On startup the control plane:
+
+1. Loads and validates YAML config
+2. Verifies Docker socket accessibility
+3. **Orphan detection** — scans for containers matching naming convention (`{model}-{backend}-{instance}`) that match configured models but are missing from in-memory state. Adopts them as active deployments (restores model → port mapping, marks as `running`).
+4. Removes any crashed orphans left from previous sessions
+5. Starts models with `auto_start: true`
+6. Begins listening on API port
 
 ---
 
-## 12. Error Handling
+## 13. Error Handling
 
-- Model not found → 404
-- Model not running → 400
-- Backend not healthy → 502
-
----
-
-## 13. Future Extensions (Not in MVP)
-
-- Lazy loading on request
-- LRU model eviction
-- GPU-aware scheduling
-- Multi-instance per model
-- Streaming normalization
-- Metrics + observability
-- Web UI
+| Condition | Status |
+|-----------|--------|
+| Model not found in config | 404 |
+| Model configured but not running | 400 |
+| Backend unhealthy | 503 |
+| Docker daemon unavailable | 503 |
+| Container failed to start | 500 |
+| Request timeout (initial connection) | 504 |
+| Config validation error (startup) | fatal, service exits |
 
 ---
 
@@ -279,13 +302,9 @@ No persistence required.
 - Control plane owns orchestration
 - Runtime containers are dumb
 - Normalize only where necessary
+- Adapters wrap containers (no sidecars required)
 
 ---
 
-## 15. Open Questions
 
-- Should streaming be normalized or passed through?
-- How to handle token limits inconsistencies?
-- Should adapters wrap non-OpenAI runtimes or require sidecars?
-- How to expose model metadata (context size, etc.)?
 
