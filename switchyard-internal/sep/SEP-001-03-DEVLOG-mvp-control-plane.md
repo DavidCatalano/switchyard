@@ -12,12 +12,13 @@
 - 2026-04-28 — Phase 1 complete (scaffolding + configuration). Key decisions: `RuntimeDefaults` uses Pydantic `extra="allow"` so backend keys map directly from YAML. OTel integration depends only on `opentelemetry-api` — no SDK lock-in. Config loader performs additive `extra_args` merging so defaults and per-model flags coexist. 63 tests, all gates green.
 - 2026-04-28 — Phase 2 complete. Delivered `BackendAdapter` ABC + `DeploymentInfo` frozen dataclass, `AdapterRegistry` with factory pattern, `PortAllocator` with sequential/skip-in-use/thread-safe allocation, and `DeploymentStateManager` with status transitions and port lookups. 105 tests total, all gates green.
 - 2026-04-28 — Phase 3 complete. Delivered `LifecycleManager` (`load_model`, `unload_model`, background health polling, `bootstrap()` startup sequence), `OrphanDetector` with Docker container scan/adopt/remove using `Protocol`-based typing, and reserved port allocation (`PortAllocator.allocate(port=N)`). 133 tests total, all gates green.
+- 2026-04-28 — Phase 4 complete. Delivered full API layer via FastAPI routes in `_register_routes()`: `POST /models/load` (202), `POST /models/unload`, `GET /models`, `GET /models/{model}/status`, `POST /v1/chat/completions` (blocking + streaming SSE proxy), `POST /v1/backends/{model}/{path}` (scoped passthrough). Error handling maps httpx exceptions to spec §13 codes (504 timeout, 503 unavailable, 500/503 forwarded). 157 tests total, all gates green.
 
 ---
 
 ## Handoff
 
-**Next work**: Phase 4 — API endpoints + routing (T4.1–T4.9). Wire `LifecycleManager` and `DeploymentStateManager` into FastAPI routes under `_register_routes()` in `app.py`.
+**Next work**: Phase 5 — First Backend Adapter (vLLM). Implement `vLLMAdapter` extending `BackendAdapter` to handle container lifecycle (start/stop/health) via Docker Python SDK. Wire into `AdapterRegistry` with factory for `vllm` backend.
 
 **Read first**:
 1. `switchyard-internal/process/DEV.md` — workflow, branching, gates

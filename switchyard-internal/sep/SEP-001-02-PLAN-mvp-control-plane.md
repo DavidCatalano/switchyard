@@ -82,15 +82,15 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 **Goal**: All API endpoints work, requests route to backends, streaming proxies correctly, error codes match spec.
 
 #### Tasks
-- [ ] **T4.1**: Implement `POST /models/load` (202 async response, triggers lifecycle manager)
-- [ ] **T4.2**: Implement `POST /models/unload` (stops and removes container)
-- [ ] **T4.3**: Implement `GET /models` (returns list with status, backend, port, started_at)
-- [ ] **T4.4**: Implement `GET /models/{model}/status` (returns status enum)
-- [ ] **T4.5**: Implement `POST /v1/chat/completions` — extract model, verify running, proxy via httpx (blocking and streaming variants)
-- [ ] **T4.6**: Implement streaming proxy — transparent SSE forward via `StreamingResponse`, no buffering, timeout on initial connection only
-- [ ] **T4.7**: Implement `POST /v1/backends/{model}/{path...}` — scoped passthrough to backend-specific endpoints
-- [ ] **T4.8**: Implement error handling middleware/handlers per spec §13 (404, 400, 503, 500, 504)
-- [ ] **T4.9**: Tests: all lifecycle endpoints (happy path + error cases), chat completions proxy (mock backend), streaming proxy (mock SSE), passthrough, error code coverage
+- [X] **T4.1**: Implement `POST /models/load` (202 async response, triggers lifecycle manager)
+- [X] **T4.2**: Implement `POST /models/unload` (stops and removes container)
+- [X] **T4.3**: Implement `GET /models` (returns list with status, backend, port, started_at)
+- [X] **T4.4**: Implement `GET /models/{model}/status` (returns status enum)
+- [X] **T4.5**: Implement `POST /v1/chat/completions` — extract model, verify running, proxy via httpx (blocking and streaming variants)
+- [X] **T4.6**: Implement streaming proxy — transparent SSE forward via `StreamingResponse`, no buffering, timeout on initial connection only
+- [X] **T4.7**: Implement `POST /v1/backends/{model}/{path...}` — scoped passthrough to backend-specific endpoints
+- [X] **T4.8**: Implement error handling middleware/handlers per spec §13 (404, 400, 503, 500, 504)
+- [X] **T4.9**: Tests: all lifecycle endpoints (happy path + error cases), chat completions proxy (mock backend), streaming proxy (mock SSE), passthrough, error code coverage
 
 ### Phase 5: First Backend Adapter (vLLM)
 
