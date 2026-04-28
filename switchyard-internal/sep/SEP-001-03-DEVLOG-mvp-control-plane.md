@@ -24,6 +24,7 @@
 2. `switchyard-internal/process/PYTHON.md` — typing, TDD rules, lint/type commands
 3. `switchyard-internal/sep/SEP-001-02-PLAN-mvp-control-plane.md` — task breakdown; T4.x descriptions
 4. `spec.md` — API endpoint specs, error codes (§13), proxy behavior
+5. `switchyard-internal/sep/SEP-001-04-CONTEXT-vllm-config.md` — vLLM implementation details and YAML structure
 
 **Context to carry forward**:
 - Branch: `sep/001` only. Never touch `main`.
