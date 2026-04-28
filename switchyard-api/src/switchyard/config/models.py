@@ -143,16 +143,24 @@ class ModelConfig(BaseModel):
 class RuntimeDefaults(BaseModel):
     """Per-engine defaults that cascade to all models of a given backend.
 
-    Uses ``dict[str, dict[str, Any]]`` to remain backend-agnostic.
-    Each dict is merged with per-model runtime config by the loader (T1.3).
+    Uses ``extra = "allow"`` so any key (backend name) becomes an attribute.
+    Each value is a ``dict[str, Any]`` merged with per-model runtime config
+    by the loader (T1.3).
+
+    Example:
+        runtime_defaults:
+            vllm:
+                gpu_memory_utilization: 0.92
+            koboldcpp:
+                n_gpu_layers: -1
     """
 
-    defaults: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    model_config = {"extra": "allow"}
 
-    @property
-    def by_name(self) -> dict[str, dict[str, Any]]:
-        """Alias for ``defaults`` for ergonomic access."""
-        return self.defaults
+    def get_backend_defaults(self, backend: str) -> dict[str, Any]:
+        """Get defaults dict for a given backend name."""
+        extra = self.__pydantic_extra__ or {}
+        return dict(extra.get(backend) or {})
 
 
 class Config(BaseModel):

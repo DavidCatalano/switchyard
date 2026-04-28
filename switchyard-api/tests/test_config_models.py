@@ -232,18 +232,16 @@ class TestRuntimeDefaults:
     def test_empty_defaults(self) -> None:
         """Defaults can be empty."""
         defaults = RuntimeDefaults()
-        assert defaults.defaults == {}
+        assert defaults.get_backend_defaults("vllm") == {}
 
     def test_multiple_backends(self) -> None:
         """Defaults can specify multiple backends."""
-        defaults = RuntimeDefaults(
-            defaults={
-                "vllm": {"gpu_memory_utilization": 0.92, "tensor_parallel_size": 2},
-                "koboldcpp": {"n_gpu_layers": -1},
-            },
-        )
-        assert "vllm" in defaults.defaults
-        assert "koboldcpp" in defaults.defaults
+        defaults = RuntimeDefaults.model_validate({
+            "vllm": {"gpu_memory_utilization": 0.92, "tensor_parallel_size": 2},
+            "koboldcpp": {"n_gpu_layers": -1},
+        })
+        assert defaults.get_backend_defaults("vllm")["gpu_memory_utilization"] == 0.92
+        assert defaults.get_backend_defaults("koboldcpp")["n_gpu_layers"] == -1
 
 
 class TestConfig:
