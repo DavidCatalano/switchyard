@@ -36,19 +36,28 @@ class PortAllocator:
         """Return a copy of currently allocated ports."""
         return set(self._allocated)
 
-    def allocate(self) -> int:
-        """Allocate the next available port.
+    def allocate(self, port: int | None = None) -> int:
+        """Allocate a port.
 
-        Scans sequentially from ``base_port``, skipping ports that are
-        already allocated internally or externally bound.
+        If ``port`` is given, registers it directly (for orphan adoption).
+        Otherwise scans sequentially from ``base_port``, skipping ports that
+        are already allocated internally or externally bound.
 
         Returns:
             An available port number.
 
         Raises:
             RuntimeError: If no ports are available within ``max_attempts``.
+            ValueError: If the requested port is already allocated.
         """
         with self._lock:
+            if port is not None:
+                if port in self._allocated:
+                    raise ValueError(f"port {port} is already allocated")
+                self._allocated.add(port)
+                logger.info("allocated port %d for backend (reserved)", port)
+                return port
+
             for offset in range(self._max_attempts):
                 port = self._base_port + offset
                 if port in self._allocated:

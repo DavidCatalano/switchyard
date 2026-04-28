@@ -9,8 +9,9 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from switchyard.config.models import ModelConfig
+from switchyard.config.models import Config, ModelConfig
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
+from switchyard.core.orphan import OrphanDetector, _DockerClient
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
 from switchyard.core.state import DeploymentStateManager
@@ -211,6 +212,53 @@ class LifecycleManager:
                 )
                 break
 
+    async def bootstrap(
+        self, config: Config, docker_client: _DockerClient,
+    ) -> None:
+        """Run the startup bootstrap sequence.
+
+        1. Verify Docker daemon is accessible
+        2. Run orphan detection (adopt running, remove crashed)
+        3. Auto-start models with ``auto_start=True``
+
+        Args:
+            config: Application configuration.
+            docker_client: Docker SDK client instance.
+
+        Raises:
+            ConnectionError: If Docker daemon is not accessible.
+        """
+        # 1. Verify Docker connectivity
+        if not docker_client.ping():
+            raise ConnectionError("docker daemon is not accessible")
+
+        # 2. Orphan detection
+        detector = OrphanDetector(docker_client, config)
+        results = detector.scan()
+
+        for orphan in results.adopted:
+            # Allocate the orphan's port so allocator knows it's taken
+            self.port_allocator.allocate(port=orphan.port)
+            self.state.add(orphan)
+            logger.info(
+                "bootstrap: adopted orphan %s (port=%d)",
+                orphan.model_name, orphan.port,
+            )
+
+        for name in results.removed:
+            logger.info("bootstrap: removed orphan %s", name)
+
+        # 3. Auto-start models not already in state
+        adopted_names = {o.model_name for o in results.adopted}
+        for name, model_config in config.models.items():
+            if model_config.control.auto_start and name not in adopted_names:
+                try:
+                    await self.load_model(name, model_config)
+                except Exception:
+                    logger.error(
+                        "bootstrap: failed to auto-start %s", name,
+                        exc_info=True,
+                    )
     async def _wait_for_status(
         self,
         model_name: str,

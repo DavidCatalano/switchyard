@@ -42,6 +42,8 @@ class _DockerClient(Protocol):
     @property
     def containers(self) -> Any: ...
 
+    def ping(self) -> bool: ...
+
 
 @dataclass
 class OrphanResults:

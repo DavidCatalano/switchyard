@@ -115,3 +115,17 @@ class TestPortAllocator:
         assert allocator.allocated == {p1, p2}
         allocator.release(p1)
         assert allocator.allocated == {p2}
+
+    def test_allocate_reserved_port(self) -> None:
+        """Allocating a specific port registers it directly."""
+        allocator = PortAllocator(base_port=9000)
+        port = allocator.allocate(port=9500)
+        assert port == 9500
+        assert 9500 in allocator.allocated
+
+    def test_allocate_reserved_duplicate_raises(self) -> None:
+        """Allocating an already reserved port raises."""
+        allocator = PortAllocator(base_port=9000)
+        allocator.allocate(port=9500)
+        with pytest.raises(ValueError, match="already allocated"):
+            allocator.allocate(port=9500)
