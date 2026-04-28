@@ -63,7 +63,7 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 - [X] **T2.2**: Implement adapter registry (map backend name → adapter class, factory to instantiate)
 - [X] **T2.3**: Implement port allocator (sequential from base, skip-in-use check, release on free)
 - [X] **T2.4**: Implement deployment state manager (in-memory: model → deployment mapping, status tracking, port tracking)
-- [ ] **T2.5**: Tests: adapter registry (register, lookup, unknown backend), port allocator (allocation, skip-in-use, release), state manager (add, get, remove, status transitions)
+- [X] **T2.5**: Tests: adapter registry (register, lookup, unknown backend), port allocator (allocation, skip-in-use, release), state manager (add, get, remove, status transitions)
 
 ### Phase 3: Lifecycle Management
 
@@ -183,6 +183,8 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 | D1 | Three-level config cascade (`global` → `runtime_defaults.{backend}` → `models.{name}.runtime`) | Keeps schema extensible as new backends are added; avoids top-level pollution (`vllm_defaults`, `koboldcpp_defaults`, etc.). Peer-reviewed. | Agreed | 2026-04-28 |
 | D2 | Tiers are documentation-only; all named fields and `extra_args` become CLI flags identically | Reduces adapter complexity; new vLLM flags usable immediately via `extra_args`, promoted to named fields later with zero code change. Peer-reviewed. | Agreed | 2026-04-28 |
 | D3 | `image` field acts as version lock — pinned tag freezes CLI flag surface for that model | Mitigates flag deprecation risk (vLLM renames/changes semantics across versions). YAML becomes the version lock file. Peer-reviewed. | Agreed | 2026-04-28 |
+| D4 | `BackendAdapter` uses `abc.ABC` rather than `typing.Protocol` | Provides runtime enforcement (cannot instantiate incomplete subclasses) while still supporting static type checking. Simpler than runtime Protocol checks. | Agreed | 2026-04-28 |
+| D5 | `DeploymentInfo` is a frozen dataclass | Immutability prevents accidental state mutation across async boundaries; status updates create new instances. | Agreed | 2026-04-28 |
 
 ---
 

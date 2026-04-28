@@ -10,6 +10,7 @@
 
 - 2026-04-27 — Project initialized. Completed research into vLLM's CLI surface (~39 meaningful flags across 12 argument groups). Settled on a three-level cascade model for config (global → per-backend defaults → per-model overrides) rather than a flat tiered schema.
 - 2026-04-28 — Phase 1 complete (scaffolding + configuration). Key decisions: `RuntimeDefaults` uses Pydantic `extra="allow"` so backend keys map directly from YAML. OTel integration depends only on `opentelemetry-api` — no SDK lock-in. Config loader performs additive `extra_args` merging so defaults and per-model flags coexist. 63 tests, all gates green. Next: Phase 2 (BackendAdapter protocol, adapter registry, port allocator, deployment state manager).
+- 2026-04-28 — Phase 2 nearly complete. Delivered `BackendAdapter` ABC + `DeploymentInfo` frozen dataclass (T2.1), `AdapterRegistry` with factory pattern (T2.2), `PortAllocator` with sequential/skip-in-use/thread-safe allocation (T2.3), and `DeploymentStateManager` with status transitions and port lookups (T2.4). 105 tests total, all gates green. Remaining: T2.5 (combined test coverage for registry/allocator/state — already satisfied by individual test suites, to be verified and marked).
 
 ---
 
