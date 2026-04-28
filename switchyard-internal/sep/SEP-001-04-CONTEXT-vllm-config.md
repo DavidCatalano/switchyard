@@ -13,7 +13,7 @@
 > Research sourced from vLLM official documentation via Context7 MCP:
 > - `/vllm-project/vllm` — vLLM source repository (10,056 snippets, benchmark 78.94)
 > - `/websites/vllm_ai_en` — docs.vllm.ai (49,816 snippets, benchmark 40.90)
-> - Real-world deployment reference: `reference-then-delete/vLLM/docker-compose.yml`
+> - Real-world deployment references: `reference-then-delete/vLLM/docker-compose.yml`, `compose-openai.yml`, `compose-qwen2.5-vl.yml`
 
 This document catalogs all vLLM `serve` command-line arguments relevant to Switchyard's `VLLMAdapter`, organized by vLLM's internal argument group categories, and concludes with recommendations for which parameters should be exposed in Switchyard's YAML configuration.
 
@@ -141,6 +141,15 @@ This document catalogs all vLLM `serve` command-line arguments relevant to Switc
 | `--tool-call-parser` | Model-specific tool/function-call parser; e.g. `qwen3_coder`, `glm4`. Needed for models with custom tool-calling formats. |
 | `--enable-auto-tool-choice` | Enables automatic tool/function-call routing at the model level. |
 
+### 11. Multimodal (`MultiModalConfig`)
+
+| Parameter | Why |
+|---|---|
+| `--limit-mm-per-prompt` | Dict mapping modality to count (and optional size hints: width, height, num_frames). Controls memory by bounding how many images/videos/audio per prompt. Accepts simple form (`{"image": 4}`) or rich form (`{"image": {"count": 5, "width": 512, "height": 512}}`). Supports `image`, `video`, and `audio` modalities. Setting a modality to 0 disables it. |
+| `--language-model-only` | Boolean. Disables all multimodal inputs by setting all modality limits to 0. Allows running a hybrid model (Qwen 3.5, Llama 4) in text-only mode, freeing GPU memory by skipping multimodal module loading. |
+| `--enable-mm-embeds` | Boolean. Enables multimodal embedding outputs for models that support it. |
+| `--mm-processor-kwargs` | Dict forwarded to the model's transformers processor. Model-specific overrides: `max_pixels`, `min_pixels`, `fps` (Qwen-VL series), `num_crops` (Phi-3-Vision), etc. Controls image/video resolution and processing behavior. |
+
 ---
 
 ## Real-World Validation
@@ -154,6 +163,8 @@ The parameters above were validated against an actual home AI server deployment 
 - `reasoning_parser`, `tool_call_parser`, and `enable_auto_tool_choice` are new categories for reasoning models — not in our original research but actively deployed.
 - `--model` referenced a **local filesystem path** (`/data/LLM/...`), not a HuggingFace repo ID — the config schema must support both `repo:` and `model:` (local path).
 - `disable_custom_all_reduce` was set, suggesting TP stability tuning is needed on some hardware configurations.
+- `compose-qwen2.5-vl.yml` revealed an entirely new parameter group: `MultiModalConfig`. The `limit_mm_per_prompt` flag is a critical memory safety control for VLMs, and `language_model_only` allows running hybrid models in text-only mode. `mm_processor_kwargs` provides model-specific vision processor tuning.
+- `compose-openai.yml` confirmed no new flags beyond what was already cataloged; it reinforced that `enable_chunked_prefill` may now be a vLLM default and `VLLM_ATTENTION_BACKEND=FLASH_ATTN` may be vestigial.
 
 ---
 
@@ -213,6 +224,7 @@ These live in each model's `runtime:` block and must be unique per deployment:
 | `served_model_name` | 1 | Decouples routing name from repo ID |
 | `reasoning_parser` | 1 | Required for reasoning models (Qwen3, DeepSeek R1) to parse thinking blocks. New category from real-world deployment. |
 | `tool_call_parser` | 1 | Required for models with custom tool-calling formats. New category from real-world deployment. |
+| `limit_mm_per_prompt` | 1 | Critical memory safety control for VLMs — prevents OOM by bounding images/videos/audio per prompt. Accepts dict with simple count or rich form (count + size hints). Tier 1 for VLMs, N/A for text-only models. |
 | `enable_auto_tool_choice` | 2 | Enables automatic tool/function-call routing. New category from real-world deployment. |
 | `max_num_seqs` | 2 | Actively tuned per model to trade context length for concurrency (e.g. 4 seqs @ 100K context vs 8 @ 65K). |
 | `max_num_batched_tokens` | 2 | Tuned per model size and expected load |
@@ -226,6 +238,9 @@ These live in each model's `runtime:` block and must be unique per deployment:
 | `disable_custom_all_reduce` | 2 | TP stability tuning on certain hardware configurations. |
 | LoRA config (`enable_lora`, `max_loras`, etc.) | 3 | Advanced per-model adapter setup |
 | `enable_sleep_mode` | 3 | Some models you want always hot |
+| `language_model_only` | 2 | Run hybrid models (Qwen 3.5, Llama 4) in text-only mode; frees GPU memory by skipping multimodal module loading. |
+| `mm_processor_kwargs` | 3 | Model-specific vision processor overrides (`max_pixels`, `fps`, `num_crops`). Recognized key name rather than buried in `extra_args`. |
+| `enable_mm_embeds` | 3 | Multimodal embedding outputs; niche use case. |
 | `extra_args` | 3 | **Catch-all** — arbitrary vLLM CLI flags as a mapping |
 
 ### Tier Definitions
@@ -294,6 +309,19 @@ models:
       speculative_config:
         method: qwen3_next_mtp
         num_speculative_tokens: 2
+      # inherits gpu_memory_utilization, tensor_parallel_size, dtype
+
+  qwen2.5-vl:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+    runtime:
+      model: /data/LLM/oobabooga/models/Qwen2.5-VL-32B-Instruct-AWQ
+      max_model_len: 32768
+      limit_mm_per_prompt:
+        image: 4
+      trust_remote_code: true
+      enable_auto_tool_choice: true
+      tool_call_parser: hermes
       # inherits gpu_memory_utilization, tensor_parallel_size, dtype
 ```
 
