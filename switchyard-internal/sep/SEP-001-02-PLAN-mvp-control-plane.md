@@ -20,7 +20,9 @@ The project lives in `switchyard-api/` with a `src/switchyard/` package layout. 
 ## Inlined Requirements (from `spec.md`)
 
 The control plane must:
-- Load and validate YAML config at startup (fatal on invalid config)
+- Load and validate YAML config at startup with three-level cascade: `global` → `runtime_defaults.{backend}` → `models.{name}.runtime` (fatal on invalid config)
+- Support both `repo:` (HuggingFace) and `model:` (local filesystem path) as model source identifiers
+- Pass arbitrary backend flags via `extra_args` catch-all, translated verbatim to CLI arguments
 - Manage model lifecycle: load (async, 202), unload, status, list
 - Route `POST /v1/chat/completions` to the correct backend container
 - Proxy streaming responses transparently (SSE, no buffering)
@@ -44,13 +46,13 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 
 #### Tasks
 - [ ] **T1.1**: Scaffold `switchyard-api/` — `pyproject.toml` (uv, FastAPI, pydantic, pydantic-settings, pyyaml, docker, httpx, structlog, opentelemetry-api), `src/switchyard/` package layout, `tests/` directory
-- [ ] **T1.2**: Define Pydantic config models (`GlobalConfig`, `ModelConfig`, `RuntimeConfig`) for YAML and `AppSettings` (pydantic-settings) for env vars. YAML fields and env fields merge into a single config surface.
-- [ ] **T1.3**: Implement config loader — YAML via pyyaml + `model_validate`, env vars via pydantic-settings. Fatal exit on invalid config.
+- [ ] **T1.2**: Define Pydantic config models for YAML: `GlobalConfig`, `RuntimeDefaults` (dict keyed by backend name, each value is a backend-specific defaults model), `ModelConfig`, `RuntimeConfig` (supports both `repo:` and `model:` paths, plus `extra_args: dict[str, Any]` for arbitrary flag passthrough). `AppSettings` (pydantic-settings) for env vars. YAML and env merge into a single config surface.
+- [ ] **T1.3**: Implement config loader — YAML via pyyaml + `model_validate`, env vars via pydantic-settings. Resolves three-level cascade: `runtime_defaults.{backend}` provides base → per-model `runtime` overrides → `extra_args` supplies arbitrary flags. Fatal exit on invalid config.
 - [ ] **T1.4**: Configure structlog — JSON renderer for prod, console for dev. Add FastAPI middleware for request ID propagation and structured access logging.
 - [ ] **T1.5**: Wire opentelemetry-api hooks — tracing context propagation, metrics endpoint placeholder. No SDK lock-in at this layer.
 - [ ] **T1.6**: Tests: config loading (valid YAML, invalid YAML, missing fields, type coercion, env var overrides), structlog output format
-- [ ] **T1.4**: Tests: config loading (valid YAML, invalid YAML, missing fields, type coercion)
-- [ ] **T1.5**: Minimal FastAPI app with `/health` endpoint; verify quality gates pass
+- [ ] **T1.7**: Tests: config cascade — `runtime_defaults` applied to per-model, per-model overrides take precedence, `extra_args` passed through verbatim, both `repo:` and `model:` accepted
+- [ ] **T1.8**: Minimal FastAPI app with `/health` endpoint; verify quality gates pass
 
 ### Phase 2: Core Infrastructure
 
@@ -95,7 +97,7 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 **Goal**: vLLM adapter works end-to-end — container starts, health checks pass, requests route successfully.
 
 #### Tasks
-- [ ] **T5.1**: Implement `VLLMAdapter` — `start` (docker run with image, port binding, env vars from runtime config, resource limits), `stop`, `health` (GET /health), `endpoint` (return bound URL)
+- [ ] **T5.1**: Implement `VLLMAdapter` — `start` (build CLI flags from named Pydantic fields + `extra_args` passthrough; docker run with image, port binding, env vars, resource limits), `stop`, `health` (GET /health), `endpoint` (return bound URL). Adapter translates known fields and passes `extra_args` verbatim — no branching on tier.
 - [ ] **T5.2**: Register vLLM adapter in adapter registry
 - [ ] **T5.3**: Integration test: vLLM container lifecycle (requires Docker, skipped if Docker unavailable)
 - [ ] **T5.4**: Smoke test: full request cycle (load model → poll status → send chat completion → verify response) — manual/Docker-required
@@ -176,7 +178,11 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 
 ## Decision Log
 
-_None yet._
+| # | Decision | Reason | Status | Date |
+|---|----------|--------|--------|------|
+| D1 | Three-level config cascade (`global` → `runtime_defaults.{backend}` → `models.{name}.runtime`) | Keeps schema extensible as new backends are added; avoids top-level pollution (`vllm_defaults`, `koboldcpp_defaults`, etc.). Peer-reviewed. | Agreed | 2026-04-28 |
+| D2 | Tiers are documentation-only; all named fields and `extra_args` become CLI flags identically | Reduces adapter complexity; new vLLM flags usable immediately via `extra_args`, promoted to named fields later with zero code change. Peer-reviewed. | Agreed | 2026-04-28 |
+| D3 | `image` field acts as version lock — pinned tag freezes CLI flag surface for that model | Mitigates flag deprecation risk (vLLM renames/changes semantics across versions). YAML becomes the version lock file. Peer-reviewed. | Agreed | 2026-04-28 |
 
 ---
 
