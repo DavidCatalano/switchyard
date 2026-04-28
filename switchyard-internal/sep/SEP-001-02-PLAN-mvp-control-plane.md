@@ -59,7 +59,7 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 **Goal**: Backend adapter interface, port allocator, and deployment state are wired and tested.
 
 #### Tasks
-- [ ] **T2.1**: Define `BackendAdapter` protocol (`start`, `stop`, `health`, `endpoint`) and `DeploymentInfo` dataclass
+- [X] **T2.1**: Define `BackendAdapter` protocol (`start`, `stop`, `health`, `endpoint`) and `DeploymentInfo` dataclass
 - [ ] **T2.2**: Implement adapter registry (map backend name → adapter class, factory to instantiate)
 - [ ] **T2.3**: Implement port allocator (sequential from base, skip-in-use check, release on free)
 - [ ] **T2.4**: Implement deployment state manager (in-memory: model → deployment mapping, status tracking, port tracking)
