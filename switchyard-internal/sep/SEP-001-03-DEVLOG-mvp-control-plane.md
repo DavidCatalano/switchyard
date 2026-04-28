@@ -9,25 +9,15 @@
 ## Entries
 
 - 2026-04-27 — Project initialized. Completed research into vLLM's CLI surface (~39 meaningful flags across 12 argument groups). Settled on a three-level cascade model for config (global → per-backend defaults → per-model overrides) rather than a flat tiered schema.
-- 2026-04-28 — Phase 1 complete (scaffolding + configuration). Key decisions: `RuntimeDefaults` uses Pydantic `extra="allow"` so backend keys map directly from YAML. OTel integration depends only on `opentelemetry-api` — no SDK lock-in. Config loader performs additive `extra_args` merging so defaults and per-model flags coexist. 63 tests, all gates green. Next: Phase 2 (BackendAdapter protocol, adapter registry, port allocator, deployment state manager).
-- 2026-04-28 — Phase 2 complete. Delivered `BackendAdapter` ABC + `DeploymentInfo` frozen dataclass (T2.1), `AdapterRegistry` with factory pattern (T2.2), `PortAllocator` with sequential/skip-in-use/thread-safe allocation (T2.3), and `DeploymentStateManager` with status transitions and port lookups (T2.4). 105 tests total, all gates green. T2.5 (combined test coverage) satisfied by individual test suites.
-- 2026-04-28 — Phase 3 in progress. Delivered `LifecycleManager` with `load_model`/`unload_model`/background health polling (T3.1–T3.3, 15 tests), and `OrphanDetector` with Docker container scan/adopt/remove logic (T3.4, 6 tests). 126 tests total, all gates green. Remaining: T3.5 (startup bootstrap sequence), T3.6 (startup sequence tests — lifecycle + orphan tests already cover T3.1–T3.4).
-- 2026-04-28 — Phase 3 complete. Delivered `LifecycleManager.bootstrap()` (T3.5) implementing full startup sequence: Docker ping → orphan adopt → auto-start. Added `port` parameter to `PortAllocator.allocate()` for orphan reservation. 133 tests, all gates green. T3.6 satisfied by combined test suites. Phase 3 is done — next: Phase 4 (API endpoints + routing).
+- 2026-04-28 — Phase 1 complete (scaffolding + configuration). Key decisions: `RuntimeDefaults` uses Pydantic `extra="allow"` so backend keys map directly from YAML. OTel integration depends only on `opentelemetry-api` — no SDK lock-in. Config loader performs additive `extra_args` merging so defaults and per-model flags coexist. 63 tests, all gates green.
+- 2026-04-28 — Phase 2 complete. Delivered `BackendAdapter` ABC + `DeploymentInfo` frozen dataclass, `AdapterRegistry` with factory pattern, `PortAllocator` with sequential/skip-in-use/thread-safe allocation, and `DeploymentStateManager` with status transitions and port lookups. 105 tests total, all gates green.
+- 2026-04-28 — Phase 3 complete. Delivered `LifecycleManager` (`load_model`, `unload_model`, background health polling, `bootstrap()` startup sequence), `OrphanDetector` with Docker container scan/adopt/remove using `Protocol`-based typing, and reserved port allocation (`PortAllocator.allocate(port=N)`). 133 tests total, all gates green.
 
 ---
 
 ## Handoff
 
-**Next work**: Phase 4 — API endpoints + routing (T4.1–T4.9). Implement `POST /models/load`, `POST /models/unload`, `GET /models`, `GET /models/{model}/status`, `POST /v1/chat/completions`, streaming proxy, and passthrough endpoints.
-
-**Mandatory reading** (in order):
-1. `switchyard-internal/process/DEV.md` — workflow, branching, gates
-2. `switchyard-internal/process/PYTHON.md` — typing, TDD rules, lint/type commands
-3. `switchyard-internal/sep/SEP-001-02-PLAN-mvp-control-plane.md` — task breakdown; T4.x descriptions
-4. `spec.md` — API endpoint specs, error codes (§13), proxy behavior
-5. `switchyard-api/src/switchyard/app.py` — `create_app` factory; where routes register
-6. `switchyard-api/src/switchyard/core/lifecycle.py` — `LifecycleManager` to call from endpoints
-7. `switchyard-api/src/switchyard/core/state.py` — `DeploymentStateManager` for status queries
+**Next work**: Phase 4 — API endpoints + routing (T4.1–T4.9). Wire `LifecycleManager` and `DeploymentStateManager` into FastAPI routes under `_register_routes()` in `app.py`.
 
 **Context to carry forward**:
 - Branch: `sep/001` only. Never touch `main`.
@@ -36,6 +26,6 @@
 - Config cascade: `global` → `runtime_defaults.{backend}` → `models.{name}.runtime`
 - `extra_args` merging is additive (per-model wins on key conflict) — don't regress
 - OTel hooks use only `opentelemetry-api`; no `opentelemetry-sdk` imports anywhere
-- `LifecycleManager.bootstrap()` must be called at startup (Docker verify → orphan → auto-start)
-- `auto_start` is at `model_config.control.auto_start` (nested in `ControlConfig`)
+- `LifecycleManager.bootstrap()` must be called at startup (Docker verify → orphan adopt → auto-start)
+- `auto_start` lives at `model_config.control.auto_start` (nested in `ControlConfig`)
 - Status values: `"running" | "stopped" | "loading" | "error"`
