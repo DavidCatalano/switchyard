@@ -1,0 +1,4 @@
+global:
+  docker_network: model-runtime
+  base_port: 8000
+  log_level: debug

@@ -50,9 +50,9 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 - [X] **T1.3**: Implement config loader — YAML via pyyaml + `model_validate`, env vars via pydantic-settings. Resolves three-level cascade: `runtime_defaults.{backend}` provides base → per-model `runtime` overrides → `extra_args` supplies arbitrary flags. Fatal exit on invalid config.
 - [X] **T1.4**: Configure structlog — JSON renderer for prod, console for dev. Add FastAPI middleware for request ID propagation and structured access logging.
 - [X] **T1.5**: Wire opentelemetry-api hooks — tracing context propagation, metrics endpoint placeholder. No SDK lock-in at this layer.
-- [ ] **T1.6**: Tests: config loading (valid YAML, invalid YAML, missing fields, type coercion, env var overrides), structlog output format
-- [ ] **T1.7**: Tests: config cascade — `runtime_defaults` applied to per-model, per-model overrides take precedence, `extra_args` passed through verbatim, both `repo:` and `model:` accepted
-- [ ] **T1.8**: Minimal FastAPI app with `/health` endpoint; verify quality gates pass
+- [X] **T1.6**: Tests: config loading (valid YAML, invalid YAML, missing fields, type coercion, env var overrides), structlog output format
+- [X] **T1.7**: Tests: config cascade — `runtime_defaults` applied to per-model, per-model overrides take precedence, `extra_args` passed through verbatim, both `repo:` and `model:` accepted
+- [X] **T1.8**: Minimal FastAPI app with `/health` endpoint; verify quality gates pass
 
 ### Phase 2: Core Infrastructure
 
