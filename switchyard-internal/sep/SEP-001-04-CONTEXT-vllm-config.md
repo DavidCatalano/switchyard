@@ -173,9 +173,9 @@ The parameters above were validated against an actual home AI server deployment 
 Not all of these parameters belong as first-class fields in the YAML `runtime` section. They are categorized across **three config levels** that cascade, with the lowest level prevailing:
 
 ```
-global                    ← Switchyard-wide (host, network, ports, log level)
-└── vllm_defaults         ← Runtime-engine defaults (apply to all models)
-    └── models.<name>.runtime  ← Per-model overrides (highest priority)
+global                            ← Switchyard-wide (host, network, ports, log level)
+└── runtime_defaults.{backend}    ← Per-engine defaults (apply to all models of that backend)
+    └── models.<name>.runtime     ← Per-model overrides (highest priority)
 ```
 
 Each parameter also has a **tier** indicating how explicitly it should be surfaced in the schema.
@@ -190,9 +190,21 @@ These are system/host properties that apply to the control plane as a whole. No 
 | `docker_network` | 1 | Already in spec; all backends share it |
 | `log_level` | 1 | Already in spec; global control plane verbosity |
 
-### vLLM Defaults — Runtime-Engine Level
+### Runtime Defaults — Per-Engine Defaults
 
-These are vLLM-level settings that represent sensible defaults for all models on a given host. They go in a `vllm_defaults:` block (or similar) and cascade down to every model unless overridden:
+These are backend-specific defaults that cascade to every model using that runtime. They live under a shared `runtime_defaults` key, keyed by backend name, keeping the schema extensible as new backends are added:
+
+```yaml
+runtime_defaults:
+  vllm:
+    gpu_memory_utilization: 0.92
+    tensor_parallel_size: 2
+  koboldcpp:
+    n_gpu_layers: -1
+    ctx_size: 4096
+```
+
+**vLLM runtime defaults:**
 
 | Parameter | Tier | Rationale |
 |---|---|---|
@@ -251,15 +263,23 @@ These live in each model's `runtime:` block and must be unique per deployment:
 | **Tier 2** | Common — frequently tuned in production | First-class, documented Pydantic fields with sensible defaults |
 | **Tier 3** | Advanced — niche or experimental | Catch-all `extra_args` mapping that the adapter converts into `--flag value` CLI arguments |
 
+**Tiers guide documentation and discoverability, not runtime behavior.** All named fields (Tier 1 and Tier 2) are validated by the Pydantic model and translated to CLI flags identically by the adapter — there is no runtime branching on tier. `extra_args` passes through verbatim. When vLLM ships a new flag you need immediately, use it via `extra_args` first and promote it to a named field later — zero adapter code change required.
+
 ### Cascade Semantics
 
 A model's effective config is resolved by merging from top to bottom:
 
-1. **vllm_defaults** provides the base for every model
+1. **`runtime_defaults.{backend}`** provides the base for every model using that backend
 2. **Per-model runtime** overrides any keys it specifies
-3. **extra_args** on either level supplies arbitrary flags not explicitly modeled
+3. **`extra_args`** on either level supplies arbitrary flags not explicitly modeled
 
-A model that defines only `repo` and `image` inherits everything else from `vllm_defaults`. A model that overrides `tensor_parallel_size` gets its own value; all other models keep the default.
+A model that defines only `repo` and `image` inherits everything else from `runtime_defaults.vllm`. A model that overrides `tensor_parallel_size` gets its own value; all other models keep the default.
+
+### The `image` Field as Version Lock
+
+The `image` field per model does double duty: it selects the container *and* freezes the vLLM API surface for that model. Pinning `vllm/vllm-openai:v0.9.0` means the CLI flag contract for that model is fixed until you explicitly upgrade the tag. The YAML config becomes the version lock file.
+
+This is the primary defense against flag deprecation risk (e.g. vLLM renaming or changing semantics of `--max-num-batched-tokens` across versions). You only need to audit flags when you choose to bump an image tag.
 
 ### Example YAML Structure
 
@@ -269,13 +289,14 @@ global:
   docker_network: model-runtime
   log_level: info
 
-vllm_defaults:
-  gpu_memory_utilization: 0.92
-  tensor_parallel_size: 2
-  dtype: auto
-  kv_cache_dtype: auto
-  enable_prefix_caching: true
-  block_size: 16
+runtime_defaults:
+  vllm:
+    gpu_memory_utilization: 0.92
+    tensor_parallel_size: 2
+    dtype: auto
+    kv_cache_dtype: auto
+    enable_prefix_caching: true
+    block_size: 16
 
 models:
   qwen-32b:
@@ -293,7 +314,7 @@ models:
     runtime:
       repo: meta-llama/Llama-3.1-70B-Instruct
       tensor_parallel_size: 4    # override default
-      # inherits everything else from vllm_defaults
+      # inherits everything else from runtime_defaults.vllm
 
   qwen3-reasoning:
     backend: vllm

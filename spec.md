@@ -136,6 +136,17 @@ global:
   base_port: 8000
   log_level: info
 
+runtime_defaults:
+  vllm:
+    gpu_memory_utilization: 0.92
+    tensor_parallel_size: 2
+    dtype: auto
+    kv_cache_dtype: auto
+    enable_prefix_caching: true
+  koboldcpp:
+    n_gpu_layers: -1
+    ctx_size: 4096
+
 models:
   qwen-32b:
     backend: vllm
@@ -149,7 +160,18 @@ models:
 
     runtime:
       repo: Qwen/Qwen2-32B-Instruct
-      tensor_parallel_size: 2
+      # inherits gpu_memory_utilization, tensor_parallel_size, dtype, etc. from runtime_defaults.vllm
+
+  llama-70b:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+
+    control:
+      auto_start: false
+
+    runtime:
+      repo: meta-llama/Llama-3.1-70B-Instruct
+      tensor_parallel_size: 4    # override runtime_defaults.vllm
 
   mistral-7b-gguf:
     backend: koboldcpp
@@ -160,8 +182,12 @@ models:
 
     runtime:
       model_path: /models/mistral.gguf
-      context_size: 8192
+      # inherits n_gpu_layers, ctx_size from runtime_defaults.koboldcpp
 ```
+
+Config cascades from top to bottom: `global` → `runtime_defaults.{backend}` → `models.{name}.runtime`. Per-model values override defaults; defaults override global. An `extra_args` mapping on either the defaults or per-model level passes arbitrary backend-specific flags through verbatim.
+
+The `image` field per model acts as a **version lock** — pinning `vllm/vllm-openai:v0.9.0` freezes the CLI flag contract for that model. The YAML config is the version lock file.
 
 ---
 
