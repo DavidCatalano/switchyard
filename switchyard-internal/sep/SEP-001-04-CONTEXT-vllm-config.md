@@ -1,7 +1,7 @@
 # Context Document — vLLM Launch Parameters & Configuration
 
 **Title**: vLLM Server Configuration — Launch Parameters and Tiered Exposure for Switchyard
-**ID**: SEP-001-04-CONTEXT-vllm-config-new
+**ID**: SEP-001-04-CONTEXT-vllm-config
 **Date**: 2026-04-28
 **Author**: AI Coding Agent (Claude)
 **PRD**: SEP-001-01-PRD-mvp-control-plane.md
@@ -135,48 +135,122 @@ This document catalogs all vLLM `serve` command-line arguments relevant to Switc
 
 ## Recommendations
 
-Not all of these parameters belong as first-class fields in the YAML `runtime` section. They are categorized into three tiers:
+Not all of these parameters belong as first-class fields in the YAML `runtime` section. They are categorized across **three config levels** that cascade, with the lowest level prevailing:
 
-### Tier 1 — Always Exposed (core to Switchyard's orchestration role)
+```
+global                    ← Switchyard-wide (host, network, ports, log level)
+└── vllm_defaults         ← Runtime-engine defaults (apply to all models)
+    └── models.<name>.runtime  ← Per-model overrides (highest priority)
+```
 
-These parameters map directly to the `RuntimeConfig` Pydantic model and are always offered in YAML:
+Each parameter also has a **tier** indicating how explicitly it should be surfaced in the schema.
 
-- `model` / `image` (already defined in `spec.md`)
-- `tensor-parallel-size`
-- `gpu-memory-utilization`
-- `max-model-len`
-- `dtype`
-- `quantization`
-- `trust-remote-code`
-- `revision`
-- `chat-template`
+### Global — Switchyard-Wide Settings
 
-### Tier 2 — Commonly Useful (exposed via YAML, with sensible defaults)
+These are system/host properties that apply to the control plane as a whole. No per-model override is needed:
 
-These parameters are frequently tuned in production and should be offered as optional YAML fields:
+| Parameter | Tier | Rationale |
+|---|---|---|
+| `base_port` | 1 | Already in spec; controls port allocation pool |
+| `docker_network` | 1 | Already in spec; all backends share it |
+| `log_level` | 1 | Already in spec; global control plane verbosity |
 
-- `max-num-batched-tokens` / `max-num-seqs`
-- `enable-chunked-prefill`
-- `enable-prefix-caching`
-- `api-key`
-- `seed`
-- `served-model-name`
-- `hf-token`
-- `block-size`
-- `uvicorn-log-level`
+### vLLM Defaults — Runtime-Engine Level
 
-### Tier 3 — Advanced (pass-through `extra_args` dict)
+These are vLLM-level settings that represent sensible defaults for all models on a given host. They go in a `vllm_defaults:` block (or similar) and cascade down to every model unless overridden:
 
-Everything beyond Tier 1 and Tier 2 is passed through a catch-all mapping that the adapter converts into CLI flags (e.g., `extra_args["speculative_config"]` becomes `--speculative-config '...'`). This covers:
+| Parameter | Tier | Rationale |
+|---|---|---|
+| `gpu_memory_utilization` | 1 | Host GPU memory is a shared pool; a single default makes sense |
+| `tensor_parallel_size` | 1 | Determined by GPU count on the host, not by the model |
+| `dtype` | 1 | Host GPU capability (bfloat16 support, etc.) |
+| `pipeline_parallel_size` | 2 | Hardware topology; rarely varies per model |
+| `distributed_executor_backend` | 2 | `mp` vs `ray` is an infrastructure decision |
+| `block_size` | 2 | KV cache block size is a memory efficiency concern, not model-specific |
+| `kv_cache_dtype` | 2 | GPU memory policy |
+| `uvicorn_log_level` | 2 | Backend-level log verbosity, useful default |
+| `enable_prefix_caching` | 2 | Reasonable to default on/off for the whole fleet |
+| `otlp_traces_endpoint` | 2 | Single tracing collector for the whole system |
+| `kv_cache_metrics` / `enable_mfu_metrics` | 3 | System-wide observability policy |
 
-- Speculative decoding (`--speculative-config`)
-- LoRA configuration (`--enable-lora`, `--max-loras`, etc.)
-- Pipeline parallelism, data parallelism, context parallelism
-- Observability (OTLP traces, KV cache metrics, MFU metrics)
-- SSL/TLS termination at backend level
-- Root path and middleware
-- System tuning (sleep mode, performance mode, log suppression)
+### Per-Model — Model-Specific Settings
 
-This approach gives the YAML config opinionated, well-documented fields for common cases, while the catch-all `extra_args` key lets users pass arbitrary vLLM arguments for advanced or experimental needs without requiring Switchyard to know about every flag.
+These live in each model's `runtime:` block and must be unique per deployment:
+
+| Parameter | Tier | Rationale |
+|---|---|---|
+| `repo` (model identifier) | 1 | **Essential** — which model to serve |
+| `image` | 1 | Container image for the backend |
+| `max_model_len` | 1 | Each model has different context limits |
+| `quantization` | 1 | Depends on available quantized weights for that model |
+| `trust_remote_code` | 1 | Model-specific requirement |
+| `chat_template` | 1 | Model-specific |
+| `revision` / `code_revision` | 1 | Pin model weights/code version |
+| `served_model_name` | 1 | Decouples routing name from repo ID |
+| `max_num_batched_tokens` / `max_num_seqs` | 2 | Tuned per model size and expected load |
+| `enable_chunked_prefill` | 2 | May differ per model |
+| `api_key` | 2 | Per-backend auth |
+| `hf_token` | 2 | Per-model gated access |
+| `seed` | 2 | Reproducibility per model |
+| `max_logprobs` / `logprobs_mode` | 2 | Client request feature |
+| `generation_config` / `override_generation_config` | 2 | Default generation parameters |
+| `speculative_config` | 3 | Depends on draft model availability |
+| LoRA config (`enable_lora`, `max_loras`, etc.) | 3 | Advanced per-model adapter setup |
+| `enable_sleep_mode` | 3 | Some models you want always hot |
+| `extra_args` | 3 | **Catch-all** — arbitrary vLLM CLI flags as a mapping |
+
+### Tier Definitions
+
+| Tier | Meaning | Exposure |
+|---|---|---|
+| **Tier 1** | Core — essential for any deployment | First-class, documented Pydantic fields |
+| **Tier 2** | Common — frequently tuned in production | First-class, documented Pydantic fields with sensible defaults |
+| **Tier 3** | Advanced — niche or experimental | Catch-all `extra_args` mapping that the adapter converts into `--flag value` CLI arguments |
+
+### Cascade Semantics
+
+A model's effective config is resolved by merging from top to bottom:
+
+1. **vllm_defaults** provides the base for every model
+2. **Per-model runtime** overrides any keys it specifies
+3. **extra_args** on either level supplies arbitrary flags not explicitly modeled
+
+A model that defines only `repo` and `image` inherits everything else from `vllm_defaults`. A model that overrides `tensor_parallel_size` gets its own value; all other models keep the default.
+
+### Example YAML Structure
+
+```yaml
+global:
+  base_port: 8000
+  docker_network: model-runtime
+  log_level: info
+
+vllm_defaults:
+  gpu_memory_utilization: 0.92
+  tensor_parallel_size: 2
+  dtype: auto
+  enable_prefix_caching: true
+  block_size: 16
+
+models:
+  qwen-32b:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+    runtime:
+      repo: Qwen/Qwen2-32B-Instruct
+      max_model_len: 4096
+      quantization: awq
+      # inherits gpu_memory_utilization, tensor_parallel_size, dtype, etc.
+
+  llama-70b:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+    runtime:
+      repo: meta-llama/Llama-3.1-70B-Instruct
+      tensor_parallel_size: 4    # override default
+      # inherits everything else from vllm_defaults
+```
+
+This approach gives the YAML config opinionated, well-documented fields for common cases, while `extra_args` lets users pass arbitrary vLLM arguments for advanced or experimental needs without requiring Switchyard to know about every flag.
 
 ---
