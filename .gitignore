@@ -1,0 +1,39 @@
+# General
+.DS_Store
+.env
+!.env.example
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.uv-cache/
+
+# IDEs
+.idea/
+.vscode/
+*.code-workspace
+*.swp
+*.swo
+.ruff_cache
+.pytest_cache
+
+# Virtual environments
+.venv/
+
+# Build artifacts
+build/
+dist/
+*.tgz
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+
+# Prompt optimization capture data (local-only, never committed)
+**/prompts/capture/
+
+# Reference material to be deleted
+reference-then-delete/
