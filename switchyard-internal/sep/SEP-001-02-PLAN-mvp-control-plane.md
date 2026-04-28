@@ -61,8 +61,8 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 #### Tasks
 - [X] **T2.1**: Define `BackendAdapter` protocol (`start`, `stop`, `health`, `endpoint`) and `DeploymentInfo` dataclass
 - [X] **T2.2**: Implement adapter registry (map backend name → adapter class, factory to instantiate)
-- [ ] **T2.3**: Implement port allocator (sequential from base, skip-in-use check, release on free)
-- [ ] **T2.4**: Implement deployment state manager (in-memory: model → deployment mapping, status tracking, port tracking)
+- [X] **T2.3**: Implement port allocator (sequential from base, skip-in-use check, release on free)
+- [X] **T2.4**: Implement deployment state manager (in-memory: model → deployment mapping, status tracking, port tracking)
 - [ ] **T2.5**: Tests: adapter registry (register, lookup, unknown backend), port allocator (allocation, skip-in-use, release), state manager (add, get, remove, status transitions)
 
 ### Phase 3: Lifecycle Management
