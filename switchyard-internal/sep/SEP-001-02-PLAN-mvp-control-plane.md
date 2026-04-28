@@ -46,7 +46,7 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 
 #### Tasks
 - [X] **T1.1**: Scaffold `switchyard-api/` — `pyproject.toml` (uv, FastAPI, pydantic, pydantic-settings, pyyaml, docker, httpx, structlog, opentelemetry-api), `src/switchyard/` package layout, `tests/` directory
-- [ ] **T1.2**: Define Pydantic config models for YAML: `GlobalConfig`, `RuntimeDefaults` (dict keyed by backend name, each value is a backend-specific defaults model), `ModelConfig`, `RuntimeConfig` (supports both `repo:` and `model:` paths, plus `extra_args: dict[str, Any]` for arbitrary flag passthrough). `AppSettings` (pydantic-settings) for env vars. YAML and env merge into a single config surface.
+- [X] **T1.2**: Define Pydantic config models for YAML: `GlobalConfig`, `RuntimeDefaults` (dict keyed by backend name, each value is a backend-specific defaults model), `ModelConfig`, `RuntimeConfig` (supports both `repo:` and `model:` paths, plus `extra_args: dict[str, Any]` for arbitrary flag passthrough). `AppSettings` (pydantic-settings) for env vars. YAML and env merge into a single config surface.
 - [ ] **T1.3**: Implement config loader — YAML via pyyaml + `model_validate`, env vars via pydantic-settings. Resolves three-level cascade: `runtime_defaults.{backend}` provides base → per-model `runtime` overrides → `extra_args` supplies arbitrary flags. Fatal exit on invalid config.
 - [ ] **T1.4**: Configure structlog — JSON renderer for prod, console for dev. Add FastAPI middleware for request ID propagation and structured access logging.
 - [ ] **T1.5**: Wire opentelemetry-api hooks — tracing context propagation, metrics endpoint placeholder. No SDK lock-in at this layer.
