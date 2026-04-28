@@ -19,6 +19,12 @@
 
 **Next work**: Phase 4 — API endpoints + routing (T4.1–T4.9). Wire `LifecycleManager` and `DeploymentStateManager` into FastAPI routes under `_register_routes()` in `app.py`.
 
+**Read first**:
+1. `switchyard-internal/process/DEV.md` — workflow, branching, gates
+2. `switchyard-internal/process/PYTHON.md` — typing, TDD rules, lint/type commands
+3. `switchyard-internal/sep/SEP-001-02-PLAN-mvp-control-plane.md` — task breakdown; T4.x descriptions
+4. `spec.md` — API endpoint specs, error codes (§13), proxy behavior
+
 **Context to carry forward**:
 - Branch: `sep/001` only. Never touch `main`.
 - Quality gates: `cd switchyard-api && uv run pytest && uv run ruff check src tests --fix && uv run mypy src/switchyard`
