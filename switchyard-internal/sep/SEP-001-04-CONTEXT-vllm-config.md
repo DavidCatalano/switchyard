@@ -13,6 +13,7 @@
 > Research sourced from vLLM official documentation via Context7 MCP:
 > - `/vllm-project/vllm` — vLLM source repository (10,056 snippets, benchmark 78.94)
 > - `/websites/vllm_ai_en` — docs.vllm.ai (49,816 snippets, benchmark 40.90)
+> - Real-world deployment reference: `reference-then-delete/vLLM/docker-compose.yml`
 
 This document catalogs all vLLM `serve` command-line arguments relevant to Switchyard's `VLLMAdapter`, organized by vLLM's internal argument group categories, and concludes with recommendations for which parameters should be exposed in Switchyard's YAML configuration.
 
@@ -130,6 +131,29 @@ This document catalogs all vLLM `serve` command-line arguments relevant to Switc
 | `--performance-mode` | `throughput` or `latency` mode |
 | `--disable-log-stats` / `--disable-log-requests` | Suppress request-level logging |
 | `--enable-sleep-mode` | Save GPU memory when idle |
+| `--disable-custom-all-reduce` | Disables vLLM's custom NCCL all-reduce; may improve TP stability on some hardware |
+
+### 10. Reasoning & Tool Use (Model-Specific Parsers)
+
+| Parameter | Why |
+|---|---|
+| `--reasoning-parser` | Model-specific reasoning (CoT/thinking) parser; e.g. `qwen3`, `deepseek_r1`. Required for reasoning models to properly parse and surface thinking blocks. |
+| `--tool-call-parser` | Model-specific tool/function-call parser; e.g. `qwen3_coder`, `glm4`. Needed for models with custom tool-calling formats. |
+| `--enable-auto-tool-choice` | Enables automatic tool/function-call routing at the model level. |
+
+---
+
+## Real-World Validation
+
+The parameters above were validated against an actual home AI server deployment (`reference-then-delete/vLLM/docker-compose.yml`) running Qwen3.6-27B-FP8 on dual GPUs. Key observations:
+
+- `gpu_memory_utilization` was set to **0.97** (vs 0.92 default) — actively squeezed for maximum KV cache.
+- `max_model_len` was **100000** with `max_num_seqs` at **4** — a deliberate tradeoff of context length vs concurrency that is actively tuned.
+- `kv_cache_dtype: fp8_e4m3` was required to make 100K context feasible — this is not optional, it's the enabler.
+- `speculative_config` was already in production using `qwen3_next_mtp` with 2 speculative tokens — graduates from experimental to commonly useful.
+- `reasoning_parser`, `tool_call_parser`, and `enable_auto_tool_choice` are new categories for reasoning models — not in our original research but actively deployed.
+- `--model` referenced a **local filesystem path** (`/data/LLM/...`), not a HuggingFace repo ID — the config schema must support both `repo:` and `model:` (local path).
+- `disable_custom_all_reduce` was set, suggesting TP stability tuning is needed on some hardware configurations.
 
 ---
 
@@ -164,10 +188,10 @@ These are vLLM-level settings that represent sensible defaults for all models on
 | `gpu_memory_utilization` | 1 | Host GPU memory is a shared pool; a single default makes sense |
 | `tensor_parallel_size` | 1 | Determined by GPU count on the host, not by the model |
 | `dtype` | 1 | Host GPU capability (bfloat16 support, etc.) |
+| `kv_cache_dtype` | 1 | GPU memory policy; required enabler for long context (e.g. fp8_e4m3 for 100K context). Graduated from Tier 2 based on real-world deployment. |
 | `pipeline_parallel_size` | 2 | Hardware topology; rarely varies per model |
 | `distributed_executor_backend` | 2 | `mp` vs `ray` is an infrastructure decision |
 | `block_size` | 2 | KV cache block size is a memory efficiency concern, not model-specific |
-| `kv_cache_dtype` | 2 | GPU memory policy |
 | `uvicorn_log_level` | 2 | Backend-level log verbosity, useful default |
 | `enable_prefix_caching` | 2 | Reasonable to default on/off for the whole fleet |
 | `otlp_traces_endpoint` | 2 | Single tracing collector for the whole system |
@@ -179,22 +203,27 @@ These live in each model's `runtime:` block and must be unique per deployment:
 
 | Parameter | Tier | Rationale |
 |---|---|---|
-| `repo` (model identifier) | 1 | **Essential** — which model to serve |
+| `model` (local path) or `repo` (HF ID) | 1 | **Essential** — which model to serve. Must support both local filesystem paths (`/data/LLM/...`) and HuggingFace repo IDs. |
 | `image` | 1 | Container image for the backend |
-| `max_model_len` | 1 | Each model has different context limits |
+| `max_model_len` | 1 | Each model has different context limits; actively tuned (e.g. 100K vs 32K). |
 | `quantization` | 1 | Depends on available quantized weights for that model |
 | `trust_remote_code` | 1 | Model-specific requirement |
 | `chat_template` | 1 | Model-specific |
 | `revision` / `code_revision` | 1 | Pin model weights/code version |
 | `served_model_name` | 1 | Decouples routing name from repo ID |
-| `max_num_batched_tokens` / `max_num_seqs` | 2 | Tuned per model size and expected load |
+| `reasoning_parser` | 1 | Required for reasoning models (Qwen3, DeepSeek R1) to parse thinking blocks. New category from real-world deployment. |
+| `tool_call_parser` | 1 | Required for models with custom tool-calling formats. New category from real-world deployment. |
+| `enable_auto_tool_choice` | 2 | Enables automatic tool/function-call routing. New category from real-world deployment. |
+| `max_num_seqs` | 2 | Actively tuned per model to trade context length for concurrency (e.g. 4 seqs @ 100K context vs 8 @ 65K). |
+| `max_num_batched_tokens` | 2 | Tuned per model size and expected load |
 | `enable_chunked_prefill` | 2 | May differ per model |
+| `speculative_config` | 2 | Graduated from Tier 3 — already in production use with qwen3_next_mtp for MTP-based speculative decoding. |
 | `api_key` | 2 | Per-backend auth |
 | `hf_token` | 2 | Per-model gated access |
 | `seed` | 2 | Reproducibility per model |
 | `max_logprobs` / `logprobs_mode` | 2 | Client request feature |
 | `generation_config` / `override_generation_config` | 2 | Default generation parameters |
-| `speculative_config` | 3 | Depends on draft model availability |
+| `disable_custom_all_reduce` | 2 | TP stability tuning on certain hardware configurations. |
 | LoRA config (`enable_lora`, `max_loras`, etc.) | 3 | Advanced per-model adapter setup |
 | `enable_sleep_mode` | 3 | Some models you want always hot |
 | `extra_args` | 3 | **Catch-all** — arbitrary vLLM CLI flags as a mapping |
@@ -229,6 +258,7 @@ vllm_defaults:
   gpu_memory_utilization: 0.92
   tensor_parallel_size: 2
   dtype: auto
+  kv_cache_dtype: auto
   enable_prefix_caching: true
   block_size: 16
 
@@ -249,6 +279,22 @@ models:
       repo: meta-llama/Llama-3.1-70B-Instruct
       tensor_parallel_size: 4    # override default
       # inherits everything else from vllm_defaults
+
+  qwen3-reasoning:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+    runtime:
+      model: /data/LLM/oobabooga/models/Qwen3.6-27B-FP8
+      max_model_len: 100000
+      max_num_seqs: 4
+      kv_cache_dtype: fp8_e4m3        # required for 100K context
+      reasoning_parser: qwen3
+      enable_auto_tool_choice: true
+      tool_call_parser: qwen3_coder
+      speculative_config:
+        method: qwen3_next_mtp
+        num_speculative_tokens: 2
+      # inherits gpu_memory_utilization, tensor_parallel_size, dtype
 ```
 
 This approach gives the YAML config opinionated, well-documented fields for common cases, while `extra_args` lets users pass arbitrary vLLM arguments for advanced or experimental needs without requiring Switchyard to know about every flag.
