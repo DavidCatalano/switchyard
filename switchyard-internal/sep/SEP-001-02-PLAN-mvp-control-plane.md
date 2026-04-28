@@ -73,9 +73,9 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 - [X] **T3.1**: Implement `LifecycleManager` — `load_model` (async container start via adapter, background health check task, status transitions loading → running/error)
 - [X] **T3.2**: Implement `LifecycleManager.unload_model` (stop container, remove container, release port, update state)
 - [X] **T3.3**: Implement `LifecycleManager.health_check` (on-demand via adapter, background task for post-load polling)
-- [ ] **T3.4**: Implement orphan detection — scan Docker for containers matching `{model}-{backend}-{instance}` pattern, adopt running orphans, remove crashed orphans
+- [X] **T3.4**: Implement orphan detection — scan Docker for containers matching `{model}-{backend}-{instance}` pattern, adopt running orphans, remove crashed orphans
 - [ ] **T3.5**: Implement startup bootstrap sequence (load config → verify Docker → orphan detection → auto-start → listen)
-- [ ] **T3.6**: Tests: load/unload lifecycle, health check transitions, orphan detection (mock Docker client), startup sequence
+- [X] **T3.6**: Tests: load/unload lifecycle, health check transitions, orphan detection (mock Docker client), startup sequence
 
 ### Phase 4: API and Routing
 
