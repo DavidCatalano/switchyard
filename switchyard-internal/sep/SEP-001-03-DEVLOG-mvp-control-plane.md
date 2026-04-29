@@ -13,12 +13,13 @@
 - 2026-04-28 — Phase 2 complete. Delivered `BackendAdapter` ABC + `DeploymentInfo` frozen dataclass, `AdapterRegistry` with factory pattern, `PortAllocator` with sequential/skip-in-use/thread-safe allocation, and `DeploymentStateManager` with status transitions and port lookups. 105 tests total, all gates green.
 - 2026-04-28 — Phase 3 complete. Delivered `LifecycleManager` (`load_model`, `unload_model`, background health polling, `bootstrap()` startup sequence), `OrphanDetector` with Docker container scan/adopt/remove using `Protocol`-based typing, and reserved port allocation (`PortAllocator.allocate(port=N)`). 133 tests total, all gates green.
 - 2026-04-28 — Phase 4 complete. Delivered full API layer via FastAPI routes in `_register_routes()`: `POST /models/load` (202), `POST /models/unload`, `GET /models`, `GET /models/{model}/status`, `POST /v1/chat/completions` (blocking + streaming SSE proxy), `POST /v1/backends/{model}/{path}` (scoped passthrough). Error handling maps httpx exceptions to spec §13 codes (504 timeout, 503 unavailable, 500/503 forwarded). 157 tests total, all gates green.
+- 2026-04-28 — Phase 5 partial (T5.1 + T5.2). Delivered `VLLMAdapter` in new `adapters/` package: `_build_cli_args()` translates all named `VLLMRuntimeConfig` fields to `--kebab-case` CLI flags, `extra_args` pass through verbatim, booleans become standalone flags (True only), dicts JSON-serialized. `start()` uses Docker SDK with image, port binding (80 → host), network, env vars (HF_TOKEN), and resource limits. `stop()` stops + removes container. `health()` polls GET /health. `register_vllm()` wires adapter into `AdapterRegistry`. Wired into `create_app()` so vLLM is available at runtime. 192 tests total, all gates green.
 
 ---
 
 ## Handoff
 
-**Next work**: Phase 5 — First Backend Adapter (vLLM). Implement `vLLMAdapter` extending `BackendAdapter` to handle container lifecycle (start/stop/health) via Docker Python SDK. Wire into `AdapterRegistry` with factory for `vllm` backend.
+**Next work**: Phase 5 remaining — T5.3 (integration test: vLLM container lifecycle, Docker-required, skip if unavailable) and T5.4 (smoke test: full request cycle — load model → poll status → send chat completion → verify response, manual/Docker-required).
 
 **Read first**:
 1. `switchyard-internal/process/DEV.md` — workflow, branching, gates

@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader
 from switchyard.core.lifecycle import LifecycleManager
 from switchyard.logging import RequestContextMiddleware, configure_logging
@@ -62,7 +63,13 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
 
     # Store shared state
     app.state.config = config
-    app.state.manager = LifecycleManager()
+
+    # Create lifecycle manager and register backend adapters
+    from switchyard.core.registry import AdapterRegistry
+
+    registry = AdapterRegistry()
+    register_vllm(registry)
+    app.state.manager = LifecycleManager(registry=registry)
 
     # Register endpoints
     _register_routes(app)

@@ -25,6 +25,7 @@ dev = [
     "pytest-asyncio",
     "ruff",
     "mypy",
+    "types-docker",
     "types-pyyaml",
     "opentelemetry-sdk",
 ]

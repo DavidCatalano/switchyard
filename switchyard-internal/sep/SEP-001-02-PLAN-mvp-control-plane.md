@@ -97,8 +97,8 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 **Goal**: vLLM adapter works end-to-end — container starts, health checks pass, requests route successfully.
 
 #### Tasks
-- [ ] **T5.1**: Implement `VLLMAdapter` — `start` (build CLI flags from named Pydantic fields + `extra_args` passthrough; docker run with image, port binding, env vars, resource limits), `stop`, `health` (GET /health), `endpoint` (return bound URL). Adapter translates known fields and passes `extra_args` verbatim — no branching on tier.
-- [ ] **T5.2**: Register vLLM adapter in adapter registry
+- [X] **T5.1**: Implement `VLLMAdapter` — `start` (build CLI flags from named Pydantic fields + `extra_args` passthrough; docker run with image, port binding, env vars, resource limits), `stop`, `health` (GET /health), `endpoint` (return bound URL). Adapter translates known fields and passes `extra_args` verbatim — no branching on tier.
+- [X] **T5.2**: Register vLLM adapter in adapter registry
 - [ ] **T5.3**: Integration test: vLLM container lifecycle (requires Docker, skipped if Docker unavailable)
 - [ ] **T5.4**: Smoke test: full request cycle (load model → poll status → send chat completion → verify response) — manual/Docker-required
 
