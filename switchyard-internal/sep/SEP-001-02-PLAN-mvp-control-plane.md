@@ -99,7 +99,10 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 #### Tasks
 - [X] **T5.1**: Implement `VLLMAdapter` — `start` (build CLI flags from named Pydantic fields + `extra_args` passthrough; docker run with image, port binding, env vars, resource limits), `stop`, `health` (GET /health), `endpoint` (return bound URL). Adapter translates known fields and passes `extra_args` verbatim — no branching on tier.
 - [X] **T5.2**: Register vLLM adapter in adapter registry
-- [ ] **T5.3**: Integration test: vLLM container lifecycle (requires Docker, skipped if Docker unavailable)
+- [ ] **T5.3**: Graduated integration testing:
+  - **T5.3a**: Docker lifecycle test with minimal HTTP container — validates `start`/`stop`/`health` against a real container (tiny `python:3-slim` serving `/health → 200`). Requires Docker, skipped if unavailable. No vLLM, no GPU.
+  - **T5.3b**: CLI arg verification — assert `_build_cli_args` output matches CLI commands from `reference-then-delete/vLLM/docker-compose.yml`. Validates flag translation accuracy against real-world configs.
+  - **T5.3c**: vLLM on CPU with tiny model — full adapter + vLLM on CPU (`--cpu` flag, `gpt2` or similar). Validates end-to-end stack. Skipped by default; enabled via `TEST_VLLM_CPU=1` env var. Requires Docker + model download.
 - [ ] **T5.4**: Smoke test: full request cycle (load model → poll status → send chat completion → verify response) — manual/Docker-required
 
 ---

@@ -64,6 +64,7 @@ class VLLMRuntimeConfig(BaseModel):
     # Tokenizer settings
     tokenizer: str | None = None
     tokenizer_mode: str | None = None
+    tokenizer_revision: str | None = None
     hf_token: str | None = None
     seed: int | None = None
 
