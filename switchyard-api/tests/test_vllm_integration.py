@@ -359,9 +359,8 @@ class TestVLLMOnCPU:
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(
-            repo="gpt2",
+            repo="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             device="cpu",
-            dtype="bfloat16",
         )
         config = ModelConfig(
             backend="vllm",
@@ -419,7 +418,7 @@ class TestVLLMOnCPU:
             response = client.post(
                 f"{endpoint}/v1/chat/completions",
                 json={
-                    "model": "gpt2",
+                    "model": runtime.repo,
                     "messages": [{"role": "user", "content": "Say hello"}],
                     "max_tokens": 10,
                 },
@@ -467,7 +466,7 @@ class TestVLLMOnGPU:
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(
-            repo="gpt2",
+            repo="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             device="cuda",
             gpu_memory_utilization=0.3,
         )
@@ -527,7 +526,7 @@ class TestVLLMOnGPU:
             response = client.post(
                 f"{endpoint}/v1/chat/completions",
                 json={
-                    "model": "gpt2",
+                    "model": runtime.repo,
                     "messages": [{"role": "user", "content": "Say hello"}],
                     "max_tokens": 10,
                 },
