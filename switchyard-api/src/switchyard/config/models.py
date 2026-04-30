@@ -20,6 +20,8 @@ class GlobalConfig(BaseModel):
     docker_network: str = "model-runtime"
     base_port: int = 8000
     log_level: str = "info"
+    backend_host: str = "localhost"
+    backend_scheme: str = "http"
 
 
 class ResourcesConfig(BaseModel):

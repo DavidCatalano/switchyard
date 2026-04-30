@@ -212,6 +212,7 @@ models:
         finally:
             path.unlink()
 
+    @pytest.mark.no_isolate
     def test_env_override_config_path(self) -> None:
         """SWITCHYARD_CONFIG_PATH env var sets config file location."""
         path = _write_yaml(VALID_MINIMAL)
@@ -227,6 +228,7 @@ models:
         finally:
             path.unlink()
 
+    @pytest.mark.no_isolate
     def test_env_override_base_port(self) -> None:
         """SWITCHYARD_BASE_PORT env var overrides YAML base_port."""
         path = _write_yaml(VALID_MINIMAL)
@@ -242,6 +244,7 @@ models:
         finally:
             path.unlink()
 
+    @pytest.mark.no_isolate
     def test_env_override_log_level(self) -> None:
         """SWITCHYARD_LOG_LEVEL env var overrides YAML log_level."""
         path = _write_yaml(VALID_MINIMAL)
@@ -257,6 +260,7 @@ models:
         finally:
             path.unlink()
 
+    @pytest.mark.no_isolate
     def test_env_overrides_take_precedence(self) -> None:
         """Env vars override YAML values."""
         content = """\
@@ -321,5 +325,64 @@ models:
         try:
             config = ConfigLoader.load(path)
             assert config.models["test"].runtime.repo == "test/repo"
+        finally:
+            path.unlink()
+
+    @pytest.mark.no_isolate
+    def test_env_override_backend_host(self) -> None:
+        """SWITCHYARD_BACKEND_HOST env var overrides backend host."""
+        path = _write_yaml(VALID_MINIMAL)
+        try:
+            env_path = os.environ
+            os.environ = dict(env_path)
+            os.environ["SWITCHYARD_BACKEND_HOST"] = "trainbox"
+            try:
+                config = ConfigLoader.load(path)
+                assert config.global_config.backend_host == "trainbox"
+            finally:
+                os.environ = env_path
+        finally:
+            path.unlink()
+
+    @pytest.mark.no_isolate
+    def test_env_override_backend_scheme(self) -> None:
+        """SWITCHYARD_BACKEND_SCHEME env var overrides scheme."""
+        path = _write_yaml(VALID_MINIMAL)
+        try:
+            env_path = os.environ
+            os.environ = dict(env_path)
+            os.environ["SWITCHYARD_BACKEND_SCHEME"] = "https"
+            try:
+                config = ConfigLoader.load(path)
+                assert config.global_config.backend_scheme == "https"
+            finally:
+                os.environ = env_path
+        finally:
+            path.unlink()
+
+    @pytest.mark.no_isolate
+    def test_env_override_docker_network(self) -> None:
+        """SWITCHYARD_DOCKER_NETWORK env var overrides YAML docker_network."""
+        path = _write_yaml(VALID_MINIMAL)
+        try:
+            env_path = os.environ
+            os.environ = dict(env_path)
+            os.environ["SWITCHYARD_DOCKER_NETWORK"] = "custom-net"
+            try:
+                config = ConfigLoader.load(path)
+                assert config.global_config.docker_network == "custom-net"
+            finally:
+                os.environ = env_path
+        finally:
+            path.unlink()
+
+    def test_defaults_for_remote_fields(self) -> None:
+        """Remote Docker fields have correct defaults when not set."""
+        path = _write_yaml(VALID_MINIMAL)
+        try:
+            config = ConfigLoader.load(path)
+            assert config.global_config.backend_host == "localhost"
+            assert config.global_config.backend_scheme == "http"
+            assert config.global_config.docker_network == "model-runtime"
         finally:
             path.unlink()

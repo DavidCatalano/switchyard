@@ -9,10 +9,14 @@ Validates:
 - Health check via GET /health
 - Endpoint URL construction
 - Registration in AdapterRegistry (T5.2)
+- Configured backend_host and docker_network usage
+- Docker client factory fallback
 """
 
 from __future__ import annotations
 
+from collections.abc import Generator
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -28,9 +32,11 @@ from switchyard.core.registry import AdapterRegistry
 # --- Helpers ---
 
 
-def _make_model_config(overrides: dict | None = None) -> ModelConfig:
+def _make_model_config(
+    overrides: dict[str, Any] | None = None,
+) -> ModelConfig:
     """Create a minimal ModelConfig for vLLM tests."""
-    defaults = {
+    defaults: dict[str, Any] = {
         "backend": "vllm",
         "image": "vllm/vllm-openai:latest",
         "runtime": VLLMRuntimeConfig(repo="test/model"),
@@ -38,6 +44,15 @@ def _make_model_config(overrides: dict | None = None) -> ModelConfig:
     if overrides:
         defaults.update(overrides)
     return ModelConfig(**defaults)
+
+
+def _make_mock_docker_client() -> MagicMock:
+    """Create a mock Docker client for adapter tests."""
+    mock_client = MagicMock()
+    mock_container = MagicMock()
+    mock_container.short_id = "abc123"
+    mock_client.containers.run.return_value = mock_container
+    return mock_client
 
 
 # --- T5.1: _build_cli_args ---
@@ -299,89 +314,88 @@ class TestVLLMAdapter:
     """VLLMAdapter lifecycle tests (Docker SDK mocked)."""
 
     @pytest.fixture
-    def adapter(self) -> None:
+    def adapter(self) -> Generator:  # type: ignore[type-arg]
         from switchyard.adapters.vllm import VLLMAdapter
 
-        yield VLLMAdapter()
+        mock_client = _make_mock_docker_client()
+        yield VLLMAdapter(docker_client=mock_client)
+
+    @pytest.fixture
+    def adapter_remote(self) -> Generator:  # type: ignore[type-arg]
+        """Adapter configured for remote Docker."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        yield VLLMAdapter(
+            docker_client=mock_client,
+            backend_host="trainbox",
+            backend_scheme="http",
+            docker_network="custom-net",
+        )
 
     def test_start_creates_container(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config()
-        container_mock = MagicMock()
-        container_mock.id = "abc123def456"
-        container_mock.short_id = "abc123"
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.containers.run.return_value = container_mock
-            mock_docker.return_value = mock_client
+        info = adapter.start(config, 8001)
 
-            info = adapter.start(config, 8001)
-
-        mock_client.containers.run.assert_called_once()
+        adapter._client.containers.run.assert_called_once()
         assert info.container_id == "abc123"
         assert info.port == 8001
         assert info.backend == "vllm"
 
     def test_start_passes_image_and_port(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config()
-        container_mock = MagicMock()
-        container_mock.short_id = "abc123"
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.containers.run.return_value = container_mock
-            mock_docker.return_value = mock_client
+        adapter.start(config, 8001)
 
-            adapter.start(config, 8001)
-
-        call_kwargs = mock_client.containers.run.call_args
+        call_kwargs = adapter._client.containers.run.call_args
         assert call_kwargs[1]["image"] == "vllm/vllm-openai:latest"
         # port bindings should include host:container mapping
         assert "ports" in call_kwargs[1]
+        # Internal port should be 8000 (vLLM default)
+        assert 8000 in call_kwargs[1]["ports"]
 
     def test_start_passes_network(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config()
-        container_mock = MagicMock()
-        container_mock.short_id = "abc123"
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.containers.run.return_value = container_mock
-            mock_docker.return_value = mock_client
+        adapter.start(config, 8001)
 
-            adapter.start(config, 8001)
+        # Default adapter has no network set, so network is omitted
+        call_kwargs = adapter._client.containers.run.call_args
+        assert "network" not in call_kwargs[1]
 
-        call_kwargs = mock_client.containers.run.call_args
-        assert call_kwargs[1]["network"] == "model-runtime"
+    def test_start_passes_configured_network(
+        self, adapter_remote,
+    ) -> None:
+        """Adapter with docker_network passes it to container.run()."""
+        config = _make_model_config()
+
+        adapter_remote.start(config, 8001)
+
+        call_kwargs = adapter_remote._client.containers.run.call_args
+        assert call_kwargs[1]["network"] == "custom-net"
 
     def test_start_passes_hf_token_env(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config(
             {"runtime": VLLMRuntimeConfig(repo="org/model", hf_token="secret123")}
         )
-        container_mock = MagicMock()
-        container_mock.short_id = "abc123"
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.containers.run.return_value = container_mock
-            mock_docker.return_value = mock_client
+        adapter.start(config, 8001)
 
-            adapter.start(config, 8001)
-
-        call_kwargs = mock_client.containers.run.call_args
+        call_kwargs = adapter._client.containers.run.call_args
         assert "environment" in call_kwargs[1]
         assert call_kwargs[1]["environment"]["HF_TOKEN"] == "secret123"
 
     def test_start_passes_memory_limit(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config(
             {
@@ -389,34 +403,53 @@ class TestVLLMAdapter:
                 "resources": ResourcesConfig(memory="32g"),
             }
         )
-        container_mock = MagicMock()
-        container_mock.short_id = "abc123"
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            mock_client.containers.run.return_value = container_mock
-            mock_docker.return_value = mock_client
+        adapter.start(config, 8001)
 
-            adapter.start(config, 8001)
-
-        call_kwargs = mock_client.containers.run.call_args
+        call_kwargs = adapter._client.containers.run.call_args
         assert call_kwargs[1]["mem_limit"] == "32g"
 
     def test_start_raises_on_docker_error(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         config = _make_model_config()
+        adapter._client.containers.run.side_effect = Exception("docker error")
 
-        with patch("docker.from_env") as mock_docker:
+        with pytest.raises(RuntimeError, match="failed to start"):
+            adapter.start(config, 8001)
+
+    def test_start_uses_internal_port_8000(self) -> None:
+        """Container port binding maps internal 8000 to host port."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        adapter = VLLMAdapter(docker_client=mock_client)
+        config = _make_model_config()
+
+        adapter.start(config, 9000)
+
+        call_kwargs = mock_client.containers.run.call_args
+        assert call_kwargs[1]["ports"] == {8000: 9000}
+
+    def test_start_without_docker_client_uses_factory(self) -> None:
+        """Adapter without injected client uses docker factory."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        with patch("switchyard.core.docker.get_docker_client") as mock_factory:
             mock_client = MagicMock()
-            mock_client.containers.run.side_effect = Exception("docker error")
-            mock_docker.return_value = mock_client
+            mock_container = MagicMock()
+            mock_container.short_id = "abc123"
+            mock_client.containers.run.return_value = mock_container
+            mock_factory.return_value = mock_client
 
-            with pytest.raises(RuntimeError, match="failed to start"):
-                adapter.start(config, 8001)
+            adapter = VLLMAdapter()  # no docker_client
+            config = _make_model_config()
+            adapter.start(config, 8001)
+
+            mock_factory.assert_called_once()
 
     def test_stop_stops_and_removes_container(
-        self, adapter,  # noqa: ARG001
+        self, adapter,
     ) -> None:
         deployment = DeploymentInfo(
             model_name="test-model",
@@ -425,19 +458,18 @@ class TestVLLMAdapter:
             status="running",
             container_id="abc123",
         )
+        container_mock = MagicMock()
+        adapter._client.containers.get.return_value = container_mock
 
-        with patch("docker.from_env") as mock_docker:
-            mock_client = MagicMock()
-            container_mock = MagicMock()
-            mock_client.containers.get.return_value = container_mock
-            mock_docker.return_value = mock_client
-
-            adapter.stop(deployment)
+        adapter.stop(deployment)
 
         container_mock.stop.assert_called_once()
         container_mock.remove.assert_called_once()
 
     def test_health_running(self) -> None:
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter()
         deployment = DeploymentInfo(
             model_name="test-model",
             backend="vllm",
@@ -456,15 +488,73 @@ class TestVLLMAdapter:
             )
             mock_client.return_value.__exit__ = MagicMock(return_value=False)
 
-            from switchyard.adapters.vllm import VLLMAdapter
-
-            adapter = VLLMAdapter()
             status = adapter.health(deployment)
             assert status == "running"
 
             mock_instance.get.assert_called_with("http://localhost:8001/health")
 
+    def test_health_uses_configured_backend_host(self) -> None:
+        """Health check uses backend_host from adapter config."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter(backend_host="trainbox")
+        deployment = DeploymentInfo(
+            model_name="test-model",
+            backend="vllm",
+            port=8001,
+            status="running",
+            container_id="abc123",
+            metadata={"backend_host": "trainbox"},
+        )
+
+        with patch("httpx.Client") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(
+                return_value=mock_instance
+            )
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            status = adapter.health(deployment)
+            assert status == "running"
+
+            mock_instance.get.assert_called_with("http://trainbox:8001/health")
+
+    def test_health_uses_metadata_backend_host(self) -> None:
+        """Health check prefers backend_host from DeploymentInfo metadata."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter(backend_host="localhost")
+        deployment = DeploymentInfo(
+            model_name="test-model",
+            backend="vllm",
+            port=8001,
+            status="running",
+            container_id="abc123",
+            metadata={"backend_host": "remote-host", "backend_scheme": "https"},
+        )
+
+        with patch("httpx.Client") as mock_client:
+            mock_response = MagicMock()
+            mock_response.status_code = 200
+            mock_instance = MagicMock()
+            mock_instance.get.return_value = mock_response
+            mock_client.return_value.__enter__ = MagicMock(
+                return_value=mock_instance
+            )
+            mock_client.return_value.__exit__ = MagicMock(return_value=False)
+
+            status = adapter.health(deployment)
+            assert status == "running"
+
+            mock_instance.get.assert_called_with("https://remote-host:8001/health")
+
     def test_health_error_status(self) -> None:
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter()
         deployment = DeploymentInfo(
             model_name="test-model",
             backend="vllm",
@@ -483,13 +573,13 @@ class TestVLLMAdapter:
             )
             mock_client.return_value.__exit__ = MagicMock(return_value=False)
 
-            from switchyard.adapters.vllm import VLLMAdapter
-
-            adapter = VLLMAdapter()
             status = adapter.health(deployment)
             assert status == "error"
 
     def test_health_connection_error(self) -> None:
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter()
         deployment = DeploymentInfo(
             model_name="test-model",
             backend="vllm",
@@ -508,13 +598,13 @@ class TestVLLMAdapter:
             )
             mock_client.return_value.__exit__ = MagicMock(return_value=False)
 
-            from switchyard.adapters.vllm import VLLMAdapter
-
-            adapter = VLLMAdapter()
             status = adapter.health(deployment)
             assert status == "error"
 
     def test_endpoint_url(self) -> None:
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter()
         deployment = DeploymentInfo(
             model_name="test-model",
             backend="vllm",
@@ -523,11 +613,58 @@ class TestVLLMAdapter:
             container_id="abc123",
         )
 
-        from switchyard.adapters.vllm import VLLMAdapter
-
-        adapter = VLLMAdapter()
         url = adapter.endpoint(deployment)
         assert url == "http://localhost:8001"
+
+    def test_endpoint_uses_configured_host(self) -> None:
+        """Endpoint uses backend_host and backend_scheme from metadata."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter(backend_host="trainbox", backend_scheme="https")
+        deployment = DeploymentInfo(
+            model_name="test-model",
+            backend="vllm",
+            port=8001,
+            status="running",
+            container_id="abc123",
+            metadata={"backend_host": "trainbox", "backend_scheme": "https"},
+        )
+
+        url = adapter.endpoint(deployment)
+        assert url == "https://trainbox:8001"
+
+    def test_endpoint_falls_back_to_adapter_defaults(self) -> None:
+        """Endpoint falls back to adapter defaults when metadata is empty."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        adapter = VLLMAdapter(backend_host="remote-host")
+        deployment = DeploymentInfo(
+            model_name="test-model",
+            backend="vllm",
+            port=8001,
+            status="running",
+            container_id="abc123",
+        )
+
+        url = adapter.endpoint(deployment)
+        assert url == "http://remote-host:8001"
+
+    def test_start_returns_backend_host_in_metadata(self) -> None:
+        """DeploymentInfo metadata includes backend_host and backend_scheme."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        adapter = VLLMAdapter(
+            docker_client=mock_client,
+            backend_host="trainbox",
+            backend_scheme="https",
+        )
+        config = _make_model_config()
+
+        info = adapter.start(config, 8001)
+
+        assert info.metadata["backend_host"] == "trainbox"
+        assert info.metadata["backend_scheme"] == "https"
 
 
 # --- T5.2: Adapter Registration ---

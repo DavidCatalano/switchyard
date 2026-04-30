@@ -13,6 +13,8 @@ Validates:
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 import pytest_asyncio
 
@@ -36,7 +38,7 @@ def model_config() -> ModelConfig:
 @pytest.fixture
 def adapter_class() -> type[BackendAdapter]:
     class MockAdapter(BackendAdapter):
-        def __init__(self) -> None:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN003
             self.starts: list[tuple[ModelConfig, int]] = []
             self.stops: list[DeploymentInfo] = []
             self._healthy = True
@@ -158,6 +160,8 @@ class TestHealthCheck:
     async def test_health_transitions_to_error(
         self, manager: LifecycleManager, model_config: ModelConfig,
     ) -> None:
+        # Set a short health timeout so error transition happens quickly
+        manager._health_timeout = 0.05  # 50ms
         # Trigger adapter creation first
         manager._get_adapter("mock")
         adapter = manager._adapters["mock"]
@@ -167,6 +171,27 @@ class TestHealthCheck:
         await manager._wait_for_status("test-model", "error", timeout=5.0)
         stored = manager.state.get("test-model")
         assert stored.status == "error"
+
+    async def test_health_timeout_keeps_loading(
+        self, manager: LifecycleManager, model_config: ModelConfig,
+    ) -> None:
+        """Within startup timeout, health failures keep model in loading."""
+        # Set a short timeout and unhealthy adapter
+        manager._health_timeout = 0.05  # 50ms
+        manager._get_adapter("mock")
+        adapter = manager._adapters["mock"]
+        adapter._healthy = False  # type: ignore[attr-defined]
+
+        info = await manager.load_model("test-model", model_config)
+        assert info.status == "loading"
+
+        # Before timeout, should still be loading
+        await asyncio.sleep(0.02)
+        assert manager.get_status("test-model") == "loading"
+
+        # After timeout, should transition to error
+        await manager._wait_for_status("test-model", "error", timeout=5.0)
+        assert manager.get_status("test-model") == "error"
 
 
 class TestUnloadModel:

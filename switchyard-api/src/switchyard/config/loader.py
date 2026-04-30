@@ -22,13 +22,24 @@ class AppSettings(BaseSettings):
     """Environment variable configuration for the control plane.
 
     Env vars override YAML values after loading.
+    Reads from ``.env`` file in CWD when present.
     """
 
-    model_config = {"env_prefix": "SWITCHYARD_", "env_nested_delimiter": "__"}
+    model_config = {
+        "env_prefix": "SWITCHYARD_",
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+    }
 
     config_path: str | None = None
     base_port: int | None = None
     log_level: str | None = None
+    docker_host: str | None = None
+    backend_host: str | None = None
+    backend_scheme: str | None = None
+    docker_network: str | None = None
+    health_interval_seconds: float | None = None
+    health_timeout_seconds: float | None = None
 
 
 def _deep_merge(
@@ -158,4 +169,10 @@ class ConfigLoader:
             config.global_config.base_port = settings.base_port
         if settings.log_level is not None:
             config.global_config.log_level = settings.log_level
+        if settings.docker_network is not None:
+            config.global_config.docker_network = settings.docker_network
+        if settings.backend_host is not None:
+            config.global_config.backend_host = settings.backend_host
+        if settings.backend_scheme is not None:
+            config.global_config.backend_scheme = settings.backend_scheme
         return config

@@ -126,10 +126,14 @@ class OrphanDetector:
         return OrphanResults(adopted=adopted, removed=removed)
 
     def _extract_port(self, container: _DockerContainer) -> int | None:
-        """Extract host port from container port bindings."""
-        ports = (
-            container.attrs["NetworkSettings"]["Ports"].get("80/tcp")
-        )
-        if not ports:
-            return None
-        return int(ports[0]["HostPort"])
+        """Extract host port from container port bindings.
+
+        Checks common vLLM internal ports (8000, 80) since the adapter
+        may bind either.
+        """
+        ports = container.attrs["NetworkSettings"]["Ports"]
+        for port_key in ("8000/tcp", "80/tcp"):
+            bindings = ports.get(port_key)
+            if bindings:
+                return int(bindings[0]["HostPort"])
+        return None

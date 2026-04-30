@@ -47,6 +47,7 @@ def app(tmp_path) -> FastAPI:
     return create_app()
 
 
+@pytest.mark.no_isolate
 class TestHealthEndpoint:
     """Tests for the /health endpoint."""
 
@@ -75,6 +76,7 @@ class TestHealthEndpoint:
         assert "x-request-id" in response.headers
 
 
+@pytest.mark.no_isolate
 class TestAppCreation:
     """Tests for application creation and configuration."""
 

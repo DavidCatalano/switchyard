@@ -36,6 +36,7 @@ def _make_container(
     name: str,
     state: str = "running",
     host_port: int | None = None,
+    internal_port: int = 8000,
 ) -> MagicMock:
     """Create a mock Docker container."""
     container = MagicMock()
@@ -46,11 +47,13 @@ def _make_container(
     }
     container.status = state
     if host_port is not None:
-        container.attrs["NetworkSettings"]["Ports"]["80/tcp"] = [
+        port_key = f"{internal_port}/tcp"
+        container.attrs["NetworkSettings"]["Ports"][port_key] = [
             {"HostIp": "0.0.0.0", "HostPort": host_port},
         ]
     else:
-        container.attrs["NetworkSettings"]["Ports"]["80/tcp"] = None
+        port_key = f"{internal_port}/tcp"
+        container.attrs["NetworkSettings"]["Ports"][port_key] = None
     return container
 
 
@@ -129,3 +132,33 @@ class TestOrphanDetector:
         assert len(results.adopted) == 1
         assert results.adopted[0].model_name == "my-model"
         assert results.adopted[0].backend == "koboldcpp"
+
+    def test_orphan_port_8000_preferred(self, config: Config) -> None:
+        """Port extraction prefers 8000/tcp (vLLM default internal port)."""
+        mock_client = MagicMock()
+        container = _make_container(
+            "qwen-32b-vllm-1",
+            state="running",
+            host_port=8010,
+            internal_port=8000,
+        )
+        mock_client.containers.list.return_value = [container]
+        detector = OrphanDetector(mock_client, config)
+        results = detector.scan()
+        assert len(results.adopted) == 1
+        assert results.adopted[0].port == 8010
+
+    def test_orphan_port_80_fallback(self, config: Config) -> None:
+        """Port extraction falls back to 80/tcp if 8000/tcp not present."""
+        mock_client = MagicMock()
+        container = _make_container(
+            "qwen-32b-vllm-1",
+            state="running",
+            host_port=8020,
+            internal_port=80,
+        )
+        mock_client.containers.list.return_value = [container]
+        detector = OrphanDetector(mock_client, config)
+        results = detector.scan()
+        assert len(results.adopted) == 1
+        assert results.adopted[0].port == 8020

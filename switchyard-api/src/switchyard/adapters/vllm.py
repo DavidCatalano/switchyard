@@ -11,14 +11,17 @@ import json
 import logging
 from typing import Any
 
-import docker
 import httpx
+from docker import DockerClient
 
 from switchyard.config.models import ModelConfig, VLLMRuntimeConfig
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.registry import AdapterRegistry
 
 logger = logging.getLogger(__name__)
+
+# Internal port that vLLM binds to inside the container.
+_INTERNAL_PORT = 8000
 
 # Mapping from Pydantic field name → vLLM CLI flag.
 # Omitted fields use the default convention: snake_case → --kebab-case.
@@ -41,7 +44,35 @@ class VLLMAdapter(BackendAdapter):
 
     Translates ``VLLMRuntimeConfig`` fields into vLLM ``serve`` CLI flags,
     manages Docker container lifecycle, and performs HTTP health checks.
+
+    Args:
+        docker_client: Docker SDK client instance.
+        backend_host: Hostname or IP the control plane uses to reach
+            published container ports (default ``"localhost"``).
+        backend_scheme: URL scheme for backend HTTP calls (default ``"http"``).
     """
+
+    def __init__(
+        self,
+        docker_client: DockerClient | None = None,
+        backend_host: str = "localhost",
+        backend_scheme: str = "http",
+        docker_network: str | None = None,
+    ) -> None:
+        self._docker_client = docker_client
+        self._backend_host = backend_host
+        self._backend_scheme = backend_scheme
+        self._docker_network = docker_network
+
+    @property
+    def _client(self) -> DockerClient:
+        """Lazily create a Docker client if not injected."""
+        if self._docker_client is not None:
+            return self._docker_client
+        from switchyard.core.docker import get_docker_client
+
+        self._docker_client = get_docker_client()
+        return self._docker_client
 
     @staticmethod
     def _build_cli_args(runtime: VLLMRuntimeConfig) -> list[str]:
@@ -105,7 +136,7 @@ class VLLMAdapter(BackendAdapter):
 
         Args:
             model_config: Full model configuration.
-            port: Host port to bind to container port 80.
+            port: Host port to bind to container port ``_INTERNAL_PORT``.
 
         Returns:
             ``DeploymentInfo`` describing the running container.
@@ -113,7 +144,6 @@ class VLLMAdapter(BackendAdapter):
         Raises:
             RuntimeError: If the container fails to start.
         """
-        client = docker.from_env()
         cli_args = self._build_cli_args(model_config.runtime)
 
         command = ["serve"] + cli_args
@@ -126,11 +156,12 @@ class VLLMAdapter(BackendAdapter):
         # Resource limits
         kwargs: dict[str, Any] = {
             "image": model_config.image,
-            "ports": {80: port},
+            "ports": {_INTERNAL_PORT: port},
             "command": command,
-            "network": "model-runtime",
             "remove": False,
         }
+        if self._docker_network is not None:
+            kwargs["network"] = self._docker_network
         if environment:
             kwargs["environment"] = environment
         if model_config.resources.memory:
@@ -144,7 +175,7 @@ class VLLMAdapter(BackendAdapter):
         )
 
         try:
-            container = client.containers.run(**kwargs, detach=True)
+            container = self._client.containers.run(**kwargs, detach=True)
         except Exception as exc:
             raise RuntimeError(
                 f"failed to start vLLM container: {exc}"
@@ -161,6 +192,10 @@ class VLLMAdapter(BackendAdapter):
             port=port,
             status="loading",
             container_id=container_id,
+            metadata={
+                "backend_host": self._backend_host,
+                "backend_scheme": self._backend_scheme,
+            },
         )
 
     def stop(self, deployment: DeploymentInfo) -> None:
@@ -169,22 +204,17 @@ class VLLMAdapter(BackendAdapter):
         Args:
             deployment: The deployment to stop.
         """
-        client = docker.from_env()
         try:
-            container = client.containers.get(deployment.container_id)
+            container = self._client.containers.get(deployment.container_id)
             container.stop(timeout=30)
             container.remove()
             logger.info(
                 "vllm container stopped id=%s", deployment.container_id
             )
-        except docker.errors.NotFound:
-            logger.warning(
-                "vllm container %s not found (already removed)",
-                deployment.container_id,
-            )
         except Exception as exc:
-            logger.error(
-                "error stopping vllm container %s: %s",
+            # docker.errors.NotFound is a subclass of Exception
+            logger.warning(
+                "vllm container %s not found or error during stop: %s",
                 deployment.container_id,
                 exc,
             )
@@ -192,13 +222,18 @@ class VLLMAdapter(BackendAdapter):
     def health(self, deployment: DeploymentInfo) -> str:
         """Check vLLM container health via GET /health.
 
+        Uses ``backend_host`` from deployment metadata (or falls back to
+        the adapter's configured default).
+
         Args:
             deployment: The deployment to check.
 
         Returns:
             ``"running"`` if the health endpoint returns 200, ``"error"`` otherwise.
         """
-        url = f"http://localhost:{deployment.port}/health"
+        host = deployment.metadata.get("backend_host", self._backend_host)
+        scheme = deployment.metadata.get("backend_scheme", self._backend_scheme)
+        url = f"{scheme}://{host}:{deployment.port}/health"
         try:
             with httpx.Client(timeout=5.0) as client:
                 response = client.get(url)
@@ -209,13 +244,18 @@ class VLLMAdapter(BackendAdapter):
     def endpoint(self, deployment: DeploymentInfo) -> str:
         """Return the HTTP endpoint URL for the vLLM container.
 
+        Uses ``backend_host`` from deployment metadata (or falls back to
+        the adapter's configured default).
+
         Args:
             deployment: The deployment to get the endpoint for.
 
         Returns:
             Base URL (e.g. ``"http://localhost:8001"``).
         """
-        return f"http://localhost:{deployment.port}"
+        host = deployment.metadata.get("backend_host", self._backend_host)
+        scheme = deployment.metadata.get("backend_scheme", self._backend_scheme)
+        return f"{scheme}://{host}:{deployment.port}"
 
 
 def register_vllm(registry: AdapterRegistry) -> None:

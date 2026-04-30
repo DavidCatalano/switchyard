@@ -138,6 +138,8 @@ class TestGlobalConfig:
         assert config.docker_network == "model-runtime"
         assert config.base_port == 8000
         assert config.log_level == "info"
+        assert config.backend_host == "localhost"
+        assert config.backend_scheme == "http"
 
     def test_custom_values(self) -> None:
         """Custom values are accepted."""

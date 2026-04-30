@@ -19,6 +19,7 @@ from switchyard.core.state import DeploymentStateManager
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HEALTH_INTERVAL = 2.0  # seconds between health polls
+_DEFAULT_HEALTH_TIMEOUT = 300.0  # seconds before loading->error
 
 
 class LifecycleManager:
@@ -34,11 +35,19 @@ class LifecycleManager:
         port_allocator: PortAllocator | None = None,
         *,
         health_interval: float = _DEFAULT_HEALTH_INTERVAL,
+        health_timeout: float = _DEFAULT_HEALTH_TIMEOUT,
+        backend_host: str = "localhost",
+        backend_scheme: str = "http",
+        docker_network: str | None = None,
     ) -> None:
         self.registry = registry or AdapterRegistry()
         self.port_allocator = port_allocator or PortAllocator()
         self.state = DeploymentStateManager()
         self._health_interval = health_interval
+        self._health_timeout = health_timeout
+        self._backend_host = backend_host
+        self._backend_scheme = backend_scheme
+        self._docker_network = docker_network
         # backend name → live adapter instance (one per backend, reused)
         self._adapters: dict[str, BackendAdapter] = {}
         # model name → background health task
@@ -47,7 +56,12 @@ class LifecycleManager:
     def _get_adapter(self, backend: str) -> BackendAdapter:
         """Get or create the adapter instance for a backend."""
         if backend not in self._adapters:
-            self._adapters[backend] = self.registry.create(backend)
+            self._adapters[backend] = self.registry.create(
+                backend,
+                backend_host=self._backend_host,
+                backend_scheme=self._backend_scheme,
+                docker_network=self._docker_network,
+            )
         return self._adapters[backend]
 
     async def load_model(
@@ -172,14 +186,25 @@ class LifecycleManager:
         Transitions the deployment from ``"loading"`` to ``"running"``
         or ``"error"`` based on adapter health responses.
 
+        During the startup timeout window, transient health failures keep
+        the deployment in ``"loading"``. After the timeout, a failed check
+        transitions to ``"error"``.
+
         Args:
             model_name: The model being polled.
             initial: The initial deployment info from adapter.start().
         """
         adapter = self._get_adapter(initial.backend)
         poll_info = initial  # current snapshot
+        start_time = asyncio.get_event_loop().time()
+
         while True:
             await asyncio.sleep(self._health_interval)
+
+            # Check startup timeout
+            elapsed = asyncio.get_event_loop().time() - start_time
+            timed_out = elapsed >= self._health_timeout
+
             try:
                 health_status = adapter.health(poll_info)
             except Exception:
@@ -187,12 +212,14 @@ class LifecycleManager:
                     "health check exception for model %s",
                     model_name, exc_info=True,
                 )
-                try:
-                    self.state.update_status(model_name, "error")
-                except KeyError:
-                    # Model was unloaded during poll
-                    return
-                break
+                if timed_out:
+                    try:
+                        self.state.update_status(model_name, "error")
+                    except KeyError:
+                        return
+                    break
+                else:
+                    continue  # still within startup window, keep polling
 
             if health_status == "running":
                 try:
@@ -202,13 +229,15 @@ class LifecycleManager:
                 logger.info("model %s is running", model_name)
                 break
             else:
+                if not timed_out:
+                    continue  # still loading, keep polling
                 try:
                     poll_info = self.state.update_status(model_name, "error")
                 except KeyError:
                     return
                 logger.error(
-                    "model %s health check failed: %s",
-                    model_name, health_status,
+                    "model %s health check failed after %.0fs: %s",
+                    model_name, elapsed, health_status,
                 )
                 break
 

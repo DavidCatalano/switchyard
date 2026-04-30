@@ -47,7 +47,7 @@ def _make_config(*models: tuple[str, str, bool]) -> Config:
 class _MockAdapter(BackendAdapter):
     """Simple mock adapter for bootstrap tests."""
 
-    def __init__(self) -> None:
+    def __init__(self, **kwargs) -> None:  # noqa: ANN003
         self.starts: list[DeploymentInfo] = []
         self.stops: list[DeploymentInfo] = []
 

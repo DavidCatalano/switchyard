@@ -69,7 +69,12 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
 
     registry = AdapterRegistry()
     register_vllm(registry)
-    app.state.manager = LifecycleManager(registry=registry)
+    app.state.manager = LifecycleManager(
+        registry=registry,
+        backend_host=config.global_config.backend_host,
+        backend_scheme=config.global_config.backend_scheme,
+        docker_network=config.global_config.docker_network,
+    )
 
     # Register endpoints
     _register_routes(app)
@@ -177,7 +182,7 @@ def _register_routes(app: FastAPI) -> None:
         body = await request.json()
         model_name = body.get("model", "")
         deployment = _get_running_deployment(model_name, manager)
-        backend_url = f"http://localhost:{deployment.port}"
+        backend_url = _backend_url(deployment, config)
 
         streaming = body.get("stream", False)
 
@@ -195,10 +200,10 @@ def _register_routes(app: FastAPI) -> None:
         (embeddings, tool calls, etc.).
         """
         deployment = _get_running_deployment(model, manager)
-        backend_url = f"http://localhost:{deployment.port}/v1/{path}"
+        backend_url = _backend_url(deployment, config)
         body = await request.json()
 
-        return _blocking_proxy(backend_url, body)
+        return _blocking_proxy(backend_url + f"/v1/{path}", body)
 
 
 def _get_running_deployment(
@@ -219,6 +224,17 @@ def _get_running_deployment(
                     f"(status: {deployment.status!r})",
         )
     return deployment
+
+
+def _backend_url(deployment: Any, config: Any) -> str:
+    """Build the backend URL using configured host and scheme."""
+    host = deployment.metadata.get(
+        "backend_host", config.global_config.backend_host,
+    )
+    scheme = deployment.metadata.get(
+        "backend_scheme", config.global_config.backend_scheme,
+    )
+    return f"{scheme}://{host}:{deployment.port}"
 
 
 def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:

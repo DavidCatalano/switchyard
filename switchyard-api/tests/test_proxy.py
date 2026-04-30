@@ -24,6 +24,7 @@ def _mock_deployment(status: str = "running", port: int = 8000) -> SimpleNamespa
         port=port,
         status=status,
         started_at=None,
+        metadata={},
     )
 
 
@@ -35,7 +36,11 @@ def app():
     manager.state.list_deployments = MagicMock(return_value=[])
 
     config = Config(
-        global_config=GlobalConfig(log_level="debug"),
+        global_config=GlobalConfig(
+            log_level="debug",
+            backend_host="localhost",
+            backend_scheme="http",
+        ),
         runtime_defaults=RuntimeDefaults(),
         models={},
     )
