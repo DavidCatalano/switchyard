@@ -411,6 +411,27 @@ class TestVLLMOnCPU:
             expected_host = settings.backend_host or "localhost"
             expected_scheme = settings.backend_scheme or "http"
             assert endpoint == f"{expected_scheme}://{expected_host}:18000"
+
+            # Send a real chat completion request (end-to-end validation)
+            import httpx
+
+            client = httpx.Client(timeout=30.0)
+            response = client.post(
+                f"{endpoint}/v1/chat/completions",
+                json={
+                    "model": "gpt2",
+                    "messages": [{"role": "user", "content": "Say hello"}],
+                    "max_tokens": 10,
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            text = data["choices"][0]["message"]["content"]
+            assert text, "chat completion returned empty message"
+            print(
+                f"[vLLM smoke CPU] chat OK: {text!r}",
+                flush=True,
+            )
         finally:
             adapter.stop(info)
 
@@ -498,5 +519,26 @@ class TestVLLMOnGPU:
             expected_host = settings.backend_host or "localhost"
             expected_scheme = settings.backend_scheme or "http"
             assert endpoint == f"{expected_scheme}://{expected_host}:18000"
+
+            # Send a real chat completion request (end-to-end validation)
+            import httpx
+
+            client = httpx.Client(timeout=30.0)
+            response = client.post(
+                f"{endpoint}/v1/chat/completions",
+                json={
+                    "model": "gpt2",
+                    "messages": [{"role": "user", "content": "Say hello"}],
+                    "max_tokens": 10,
+                },
+            )
+            assert response.status_code == 200
+            data = response.json()
+            text = data["choices"][0]["message"]["content"]
+            assert text, "chat completion returned empty message"
+            print(
+                f"[vLLM smoke GPU] chat OK: {text!r}",
+                flush=True,
+            )
         finally:
             adapter.stop(info)
