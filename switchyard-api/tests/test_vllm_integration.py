@@ -380,6 +380,15 @@ class TestVLLMOnCPU:
             f"endpoint={adapter.endpoint(info)}",
             flush=True,
         )
+        print(
+            f"[vLLM smoke CPU] booting {runtime.repo} on "
+            f"{settings.backend_host or 'localhost'}:18000...",
+            flush=True,
+        )
+        print(
+            "[vLLM smoke CPU] waiting for health check (up to 90s)...",
+            flush=True,
+        )
 
         try:
             for attempt in range(1, 31):
@@ -486,6 +495,15 @@ class TestVLLMOnGPU:
         print(
             f"[vLLM smoke GPU] started container={info.container_id} "
             f"endpoint={adapter.endpoint(info)}",
+            flush=True,
+        )
+        print(
+            f"[vLLM smoke GPU] booting {runtime.repo} on "
+            f"{settings.backend_host or 'localhost'}:18000...",
+            flush=True,
+        )
+        print(
+            "[vLLM smoke GPU] waiting for health check (up to 90s)...",
             flush=True,
         )
 
