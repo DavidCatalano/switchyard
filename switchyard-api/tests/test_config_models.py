@@ -105,6 +105,7 @@ class TestVLLMRuntimeConfig:
         assert config.dtype is None
         assert config.tensor_parallel_size is None
         assert config.extra_args == {}
+        assert config.device == "cuda"  # default is GPU
 
     def test_model_from_dict(self) -> None:
         """model_validate works for dict -> Config conversion."""
@@ -127,6 +128,16 @@ class TestVLLMRuntimeConfig:
             "image": {"count": 5, "width": 512, "height": 512},
             "video": 2,
         }
+
+    def test_device_cpu(self) -> None:
+        """device can be set to 'cpu' for CPU-only runs."""
+        config = VLLMRuntimeConfig(repo="test/repo", device="cpu")
+        assert config.device == "cpu"
+
+    def test_device_cuda_default(self) -> None:
+        """device defaults to 'cuda'."""
+        config = VLLMRuntimeConfig(repo="test/repo")
+        assert config.device == "cuda"
 
 
 class TestGlobalConfig:

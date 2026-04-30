@@ -168,14 +168,23 @@ class VLLMAdapter(BackendAdapter):
             kwargs["network"] = self._docker_network
         if environment:
             kwargs["environment"] = environment
-        # GPU: request all available GPUs (vLLM requires GPU access)
-        kwargs["device_requests"] = [
-            docker.types.DeviceRequest(
-                driver="nvidia",
-                count=-1,
-                capabilities=[["gpu"]],
-            )
-        ]
+
+        # Device-specific configuration
+        runtime_device = model_config.runtime.device or "cuda"
+        if runtime_device == "cuda":
+            # GPU: request all available NVIDIA GPUs
+            kwargs["device_requests"] = [
+                docker.types.DeviceRequest(
+                    driver="nvidia",
+                    count=-1,
+                    capabilities=[["gpu"]],
+                )
+            ]
+        else:
+            # CPU: set vLLM CPU-specific environment variables
+            environment.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
+            environment.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
+            kwargs["environment"] = environment
         if model_config.resources.memory:
             kwargs["mem_limit"] = model_config.resources.memory
 

@@ -2,7 +2,8 @@
 
 T5.3a — Docker lifecycle test with minimal HTTP container.
 T5.3b — CLI arg verification against real-world docker-compose configs.
-T5.3c — vLLM on CPU with tiny model (opt-in via TEST_VLLM_CPU=1).
+T5.3c — vLLM CPU smoke test (opt-in via TEST_VLLM_CPU=1).
+T5.3d — vLLM GPU smoke test (opt-in via TEST_VLLM_GPU=1).
 """
 
 from __future__ import annotations
@@ -328,7 +329,7 @@ class TestCliArgsAgainstCompos:
 
 
 # ---------------------------------------------------------------------------
-# T5.3c — vLLM on CPU with tiny model (opt-in)
+# T5.3c — vLLM CPU smoke test (opt-in)
 # ---------------------------------------------------------------------------
 
 
@@ -337,7 +338,8 @@ class TestVLLMOnCPU:
     """Full vLLM adapter + CPU model test.
 
     Skipped by default. Enable with ``TEST_VLLM_CPU=1`` env var.
-    Requires Docker + downloads the vLLM image and gpt2 model on first run.
+    Uses the official CPU image, does not request GPU devices.
+    Requires Docker + downloads the vLLM CPU image and gpt2 model on first run.
     """
 
     ENABLED = os.environ.get("TEST_VLLM_CPU", "").lower() in ("1", "true", "yes")
@@ -350,15 +352,102 @@ class TestVLLMOnCPU:
             pytest.skip("docker daemon is not accessible")
 
     def test_cpu_model_lifecycle(self) -> None:
-        """Start vLLM with gpt2, verify health, stop.
+        """Start vLLM with gpt2 on CPU, verify health, stop."""
+        import time
 
-        Runs with GPU on trainbox (CPU mode not supported by vLLM image).
-        """
         from switchyard.config.loader import AppSettings
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(
             repo="gpt2",
+            device="cpu",
+            dtype="bfloat16",
+        )
+        config = ModelConfig(
+            backend="vllm",
+            image="vllm/vllm-openai-cpu:latest-x86_64",
+            runtime=runtime,
+        )
+
+        adapter = VLLMAdapter(
+            backend_host=settings.backend_host or "localhost",
+            backend_scheme=settings.backend_scheme or "http",
+            docker_network=settings.docker_network,
+        )
+        info = adapter.start(config, port=18000)
+
+        print(
+            f"[vLLM smoke CPU] started container={info.container_id} "
+            f"endpoint={adapter.endpoint(info)}",
+            flush=True,
+        )
+
+        try:
+            for attempt in range(1, 31):
+                time.sleep(3)
+                status = adapter.health(info)
+                print(
+                    f"[vLLM smoke CPU] attempt {attempt}/30 status={status} "
+                    f"port={info.port}",
+                    flush=True,
+                )
+                if status == "running":
+                    break
+            else:
+                # Print recent container logs before failing
+                try:
+                    container = adapter._client.containers.get(info.container_id)
+                    logs = container.logs(tail=80).decode(errors="replace")
+                    print(logs, flush=True)
+                except Exception:
+                    pass
+                status = adapter.health(info)
+                assert status == "running", (
+                    "vLLM CPU health check never succeeded after 90s"
+                )
+
+            # Verify endpoint uses configured backend host/scheme
+            endpoint = adapter.endpoint(info)
+            expected_host = settings.backend_host or "localhost"
+            expected_scheme = settings.backend_scheme or "http"
+            assert endpoint == f"{expected_scheme}://{expected_host}:18000"
+        finally:
+            adapter.stop(info)
+
+
+# ---------------------------------------------------------------------------
+# T5.3d — vLLM GPU smoke test (opt-in)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.no_isolate
+class TestVLLMOnGPU:
+    """Full vLLM adapter + GPU model test.
+
+    Skipped by default. Enable with ``TEST_VLLM_GPU=1`` env var.
+    Uses the official GPU image with NVIDIA device_requests.
+    Requires Docker, an accessible NVIDIA GPU, and sufficient free VRAM.
+    """
+
+    ENABLED = os.environ.get("TEST_VLLM_GPU", "").lower() in ("1", "true", "yes")
+
+    @pytest.fixture(autouse=True)
+    def _skip_if_disabled(self) -> None:
+        if not self.ENABLED:
+            pytest.skip("set TEST_VLLM_GPU=1 to enable")
+        if not _docker_available():
+            pytest.skip("docker daemon is not accessible")
+
+    def test_gpu_model_lifecycle(self) -> None:
+        """Start vLLM with gpt2 on GPU, verify health, stop."""
+        import time
+
+        from switchyard.config.loader import AppSettings
+
+        settings = AppSettings()
+        runtime = VLLMRuntimeConfig(
+            repo="gpt2",
+            device="cuda",
             gpu_memory_utilization=0.3,
         )
         config = ModelConfig(
@@ -374,19 +463,34 @@ class TestVLLMOnCPU:
         )
         info = adapter.start(config, port=18000)
 
+        print(
+            f"[vLLM smoke GPU] started container={info.container_id} "
+            f"endpoint={adapter.endpoint(info)}",
+            flush=True,
+        )
+
         try:
-            # Poll health until running (vLLM takes time to load model)
-            for _ in range(30):
-                import time
+            for attempt in range(1, 31):
                 time.sleep(3)
                 status = adapter.health(info)
+                print(
+                    f"[vLLM smoke GPU] attempt {attempt}/30 status={status} "
+                    f"port={info.port}",
+                    flush=True,
+                )
                 if status == "running":
                     break
             else:
-                # Final status check with more detail
+                # Print recent container logs before failing
+                try:
+                    container = adapter._client.containers.get(info.container_id)
+                    logs = container.logs(tail=80).decode(errors="replace")
+                    print(logs, flush=True)
+                except Exception:
+                    pass
                 status = adapter.health(info)
                 assert status == "running", (
-                    "vLLM health check never succeeded after 90s"
+                    "vLLM GPU health check never succeeded after 90s"
                 )
 
             # Verify endpoint uses configured backend host/scheme

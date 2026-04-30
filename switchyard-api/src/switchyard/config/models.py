@@ -9,7 +9,7 @@ Pydantic fields; Tier 3+ use the extra_args catch-all.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -52,6 +52,11 @@ class VLLMRuntimeConfig(BaseModel):
     # Enforced at the ModelConfig level (exactly one required).
     model: str | None = None
     repo: str | None = None
+
+    # --- Device ---
+    # "cuda" (default) → GPU image, device_requests, gpu_memory_utilization
+    # "cpu" → CPU image, no GPU devices, VLLM_CPU_* env vars
+    device: Literal["cpu", "cuda"] = "cuda"
 
     # Core model parameters
     max_model_len: int | None = None

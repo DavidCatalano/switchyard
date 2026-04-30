@@ -51,10 +51,15 @@ typecheck:
 quality: lint typecheck test
 	@echo "✅ All quality gates passed"
 
-# vLLM CPU smoke test (requires Docker + remote host configured in .env)
+# vLLM CPU smoke test (requires Docker, no GPU needed)
 test-vllm-cpu:
 	cd $(API_DIR) && TEST_VLLM_CPU=1 uv run pytest -q -rs -s \
 		tests/test_vllm_integration.py::TestVLLMOnCPU::test_cpu_model_lifecycle
+
+# vLLM GPU smoke test (requires Docker + accessible NVIDIA GPU + free VRAM)
+test-vllm-gpu:
+	cd $(API_DIR) && TEST_VLLM_GPU=1 uv run pytest -q -rs -s \
+		tests/test_vllm_integration.py::TestVLLMOnGPU::test_gpu_model_lifecycle
 
 # -------------------------------------------------------------------
 # Docker
@@ -99,7 +104,8 @@ help:
 	@echo "  lint           - Run ruff linter"
 	@echo "  typecheck      - Run mypy type checking"
 	@echo "  quality        - Run lint + typecheck + tests (full gates)"
-	@echo "  test-vllm-cpu  - Run vLLM CPU smoke test (requires Docker)"
+	@echo "  test-vllm-cpu  - Run vLLM CPU smoke test (no GPU needed)"
+	@echo "  test-vllm-gpu  - Run vLLM GPU smoke test (needs NVIDIA GPU)"
 	@echo "  status         - Check tunnel and API server status"
 	@echo "  docker-ps      - List containers on $(DOCKER_NETWORK) network"
 	@echo "  docker-clean   - Remove orphan switchyard containers"
@@ -116,5 +122,5 @@ help:
 	@echo "  Terminal 1: make tunnel"
 	@echo "  Terminal 2: make dev"
 
-.PHONY: tunnel dev test lint typecheck quality test-vllm-cpu docker-ps docker-clean stop status help
+.PHONY: tunnel dev test lint typecheck quality test-vllm-cpu test-vllm-gpu docker-ps docker-clean stop status help
 .DEFAULT_GOAL := help

@@ -666,6 +666,55 @@ class TestVLLMAdapter:
         assert info.metadata["backend_host"] == "trainbox"
         assert info.metadata["backend_scheme"] == "https"
 
+    def test_start_cuda_requests_gpu_devices(self) -> None:
+        """device='cuda' (default) adds device_requests for NVIDIA GPUs."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        adapter = VLLMAdapter(docker_client=mock_client)
+        config = _make_model_config()
+
+        adapter.start(config, 8001)
+
+        call_kwargs = adapter._client.containers.run.call_args
+        assert "device_requests" in call_kwargs[1]
+        device_req = call_kwargs[1]["device_requests"][0]
+        assert device_req["Driver"] == "nvidia"  # type: ignore[index]
+        assert device_req["Count"] == -1  # type: ignore[index]
+        assert device_req["Capabilities"] == [["gpu"]]  # type: ignore[index]
+
+    def test_start_cpu_no_gpu_devices(self) -> None:
+        """device='cpu' does NOT request GPU device_requests."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        adapter = VLLMAdapter(docker_client=mock_client)
+        config = _make_model_config(
+            {"runtime": VLLMRuntimeConfig(repo="test/model", device="cpu")}
+        )
+
+        adapter.start(config, 8001)
+
+        call_kwargs = adapter._client.containers.run.call_args
+        assert "device_requests" not in call_kwargs[1]
+
+    def test_start_cpu_sets_env_vars(self) -> None:
+        """device='cpu' sets VLLM_CPU_* environment variables."""
+        from switchyard.adapters.vllm import VLLMAdapter
+
+        mock_client = _make_mock_docker_client()
+        adapter = VLLMAdapter(docker_client=mock_client)
+        config = _make_model_config(
+            {"runtime": VLLMRuntimeConfig(repo="test/model", device="cpu")}
+        )
+
+        adapter.start(config, 8001)
+
+        call_kwargs = adapter._client.containers.run.call_args
+        env = call_kwargs[1]["environment"]
+        assert env["VLLM_CPU_KVCACHE_SPACE"] == "4"
+        assert env["VLLM_CPU_NUM_OF_RESERVED_CPU"] == "1"
+
 
 # --- T5.2: Adapter Registration ---
 
