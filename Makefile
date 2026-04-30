@@ -1,26 +1,44 @@
 # Switchyard — Control Plane Makefile
+#
+# Reads configuration from switchyard-api/.env when present.
+# Override any variable on the command line (e.g., make API_PORT=9000 dev).
 
-# Configuration
-API_DIR     = switchyard-api
-SSH_HOST    ?= trainbox.lan
-DOCKER_PORT ?= 2375
-API_PORT    ?= 8000
+API_DIR    := switchyard-api
+ENV_FILE   := $(API_DIR)/.env
 
-# Environment
-# pydantic-settings auto-loads .env from the API directory,
-# so we don't need to include it here explicitly.
+# -------------------------------------------------------------------
+# Source values from .env (sensible defaults for local Docker)
+# -------------------------------------------------------------------
+_env_backend  := $(shell grep -s '^SWITCHYARD_BACKEND_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
+_env_docker   := $(shell grep -s '^SWITCHYARD_DOCKER_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
+_env_network  := $(shell grep -s '^SWITCHYARD_DOCKER_NETWORK=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 
+# Command-line ?= takes precedence over .env-sourced values
+SSH_HOST       ?= $(or $(_env_backend),localhost)
+DOCKER_HOST    ?= $(or $(_env_docker),tcp://127.0.0.1:2375)
+DOCKER_NETWORK ?= $(or $(_env_network),model-runtime)
+API_PORT       ?= 8000
+
+# Derive SSH tunnel port from Docker host URL (tcp://127.0.0.1:2375 → 2375)
+DOCKER_PORT := $(or $(shell echo $(DOCKER_HOST) | sed -n 's/.*:\([0-9]\+\)$$/\1/p'),2375)
+
+# -------------------------------------------------------------------
 # Docker SSH Tunnel
+# -------------------------------------------------------------------
 tunnel:
 	@echo "🔌 SSH tunnel to $(SSH_HOST):$(DOCKER_PORT)..."
-	@ssh -L $(DOCKER_PORT):/var/run/docker.sock $(SSH_HOST) -N
+	ssh -L $(DOCKER_PORT):/var/run/docker.sock $(SSH_HOST) -N
 
+# -------------------------------------------------------------------
 # Development Server
+# -------------------------------------------------------------------
 dev:
 	@echo "🚀 Switchyard control plane (http://localhost:$(API_PORT))"
 	cd $(API_DIR) && uv run uvicorn switchyard.app:create_app --factory --host 0.0.0.0 --port $(API_PORT)
 
-# Testing
+# -------------------------------------------------------------------
+# Testing & Quality
+# -------------------------------------------------------------------
 test:
 	cd $(API_DIR) && uv run pytest tests/
 
@@ -33,19 +51,23 @@ typecheck:
 quality: lint typecheck test
 	@echo "✅ All quality gates passed"
 
+# -------------------------------------------------------------------
 # Docker
+# -------------------------------------------------------------------
 docker-ps:
-	docker ps --filter "network=model-runtime" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+	docker ps --filter "network=$(DOCKER_NETWORK)" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 docker-clean:
 	@echo "🧹 Stopping and removing switchyard containers..."
-	docker rm -f $(shell docker ps -aq --filter "name=switchyard") 2>/dev/null || true
+	-docker rm -f $(shell docker ps -aq --filter "name=switchyard") 2>/dev/null || true
 	@echo "✅ Cleaned"
 
+# -------------------------------------------------------------------
 # Service Management
+# -------------------------------------------------------------------
 stop:
-	-@echo "🛑 Stopping services..."
-	-@lsof -ti tcp:$(API_PORT) | xargs kill 2>/dev/null || true
+	@echo "🛑 Stopping services..."
+	-lsof -ti tcp:$(API_PORT) | xargs kill 2>/dev/null || true
 	@echo "✅ API server stopped"
 
 status:
@@ -61,7 +83,9 @@ status:
 		echo "❌ API server not running"; \
 	fi
 
+# -------------------------------------------------------------------
 # Help
+# -------------------------------------------------------------------
 help:
 	@echo "Switchyard Control Plane Commands:"
 	@echo "  tunnel         - Start SSH tunnel to remote Docker ($(SSH_HOST))"
@@ -71,14 +95,16 @@ help:
 	@echo "  typecheck      - Run mypy type checking"
 	@echo "  quality        - Run lint + typecheck + tests (full gates)"
 	@echo "  status         - Check tunnel and API server status"
-	@echo "  docker-ps      - List containers on the model-runtime network"
+	@echo "  docker-ps      - List containers on $(DOCKER_NETWORK) network"
 	@echo "  docker-clean   - Remove orphan switchyard containers"
 	@echo "  stop           - Stop the API server"
 	@echo ""
-	@echo "Configuration:"
-	@echo "  SSH_HOST=$(SSH_HOST)   - Remote Docker host"
-	@echo "  DOCKER_PORT=$(DOCKER_PORT) - Local port for SSH tunnel"
-	@echo "  API_PORT=$(API_PORT)   - FastAPI server port"
+	@echo "Configuration (from $(ENV_FILE):)"
+	@echo "  SSH_HOST=$(SSH_HOST)        - Remote Docker host"
+	@echo "  DOCKER_PORT=$(DOCKER_PORT)  - Local port for SSH tunnel"
+	@echo "  DOCKER_HOST=$(DOCKER_HOST)  - Docker SDK endpoint"
+	@echo "  DOCKER_NETWORK=$(DOCKER_NETWORK) - Container network"
+	@echo "  API_PORT=$(API_PORT)        - FastAPI server port"
 	@echo ""
 	@echo "Quick start (two terminals):"
 	@echo "  Terminal 1: make tunnel"
