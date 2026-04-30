@@ -101,7 +101,7 @@ class VLLMAdapter(BackendAdapter):
         # Iterate over all known named fields (excluding model/repo handled above,
         # and extra_args handled below)
         for field_name, value in runtime.model_dump().items():
-            if field_name in ("model", "repo", "extra_args"):
+            if field_name in ("model", "repo", "extra_args", "device"):
                 continue
             if value is None:
                 continue
