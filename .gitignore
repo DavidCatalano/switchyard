@@ -37,3 +37,4 @@ __pycache__/
 
 # Reference material to be deleted
 reference-then-delete/
+.pi/
