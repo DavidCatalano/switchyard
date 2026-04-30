@@ -11,6 +11,7 @@ import json
 import logging
 from typing import Any
 
+import docker
 import httpx
 from docker import DockerClient
 
@@ -167,6 +168,10 @@ class VLLMAdapter(BackendAdapter):
             kwargs["network"] = self._docker_network
         if environment:
             kwargs["environment"] = environment
+        # GPU: request all available GPUs (vLLM requires GPU access)
+        kwargs["device_requests"] = [
+            docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+        ]
         if model_config.resources.memory:
             kwargs["mem_limit"] = model_config.resources.memory
 

@@ -53,8 +53,8 @@ quality: lint typecheck test
 
 # vLLM CPU smoke test (requires Docker + remote host configured in .env)
 test-vllm-cpu:
-	cd $(API_DIR) && TEST_VLLM_CPU=1 uv run pytest -q -rs -s tests/ \
-		test_vllm_integration.py::TestVLLMOnCPU::test_cpu_model_lifecycle
+	cd $(API_DIR) && TEST_VLLM_CPU=1 uv run pytest -q -rs -s \
+		tests/test_vllm_integration.py::TestVLLMOnCPU::test_cpu_model_lifecycle
 
 # -------------------------------------------------------------------
 # Docker

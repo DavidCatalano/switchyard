@@ -29,12 +29,27 @@ def _docker_available() -> bool:
     """Check if Docker daemon is accessible."""
     import docker
 
+    # Try from_env first (honors DOCKER_HOST env var)
     try:
         client = docker.from_env()
         client.ping()
         return True
     except Exception:
-        return False
+        pass
+
+    # Fall back to SWITCHYARD_DOCKER_HOST from .env
+    from switchyard.config.loader import AppSettings
+
+    settings = AppSettings()
+    if settings.docker_host:
+        try:
+            client = docker.DockerClient(base_url=settings.docker_host)
+            client.ping()
+            return True
+        except Exception:
+            pass
+
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -42,6 +57,7 @@ def _docker_available() -> bool:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.no_isolate
 class TestDockerLifecycle:
     """Docker lifecycle tests against a minimal HTTP container.
 
@@ -57,17 +73,16 @@ class TestDockerLifecycle:
 
     def test_start_creates_real_container(self) -> None:
         """start() creates a real Docker container that serves /health."""
+        from switchyard.config.loader import AppSettings
+        from switchyard.core.docker import get_docker_client
 
-        # Override the command by patching _build_cli_args to return a
-        # minimal HTTP server command instead of vLLM CLI args
-        adapter = VLLMAdapter()
+        settings = AppSettings()
+        adapter = VLLMAdapter(
+            backend_host=settings.backend_host or "localhost",
+            backend_scheme=settings.backend_scheme or "http",
+        )
 
-        # We can't easily patch _build_cli_args in the adapter, so we'll
-        # directly call the Docker SDK to create a container and then
-        # test the health/stop path against it
-        import docker
-
-        client = docker.from_env()
+        client = get_docker_client()
 
         # Find a free port for this test
         import socket
@@ -86,6 +101,7 @@ class TestDockerLifecycle:
             "HTTPServer(('0.0.0.0', 80), H).serve_forever()",
         ]
 
+        container = None
         try:
             container = client.containers.run(
                 "python:3-slim",
@@ -105,6 +121,10 @@ class TestDockerLifecycle:
                 port=port,
                 status="running",
                 container_id=container.short_id,
+                metadata={
+                    "backend_host": settings.backend_host or "localhost",
+                    "backend_scheme": settings.backend_scheme or "http",
+                },
             )
 
             # health() should return "running" against real container
@@ -119,11 +139,12 @@ class TestDockerLifecycle:
                 client.containers.get(container.id)
         except Exception:
             # Cleanup on failure
-            try:
-                container.stop(timeout=5)
-                container.remove(force=True)
-            except Exception:
-                pass
+            if container:
+                try:
+                    container.stop(timeout=5)
+                    container.remove(force=True)
+                except Exception:
+                    pass
 
     def test_health_fails_for_unreachable_port(self) -> None:
         """health() returns 'error' when no container is listening."""
@@ -329,13 +350,16 @@ class TestVLLMOnCPU:
             pytest.skip("docker daemon is not accessible")
 
     def test_cpu_model_lifecycle(self) -> None:
-        """Start vLLM with gpt2 on CPU, verify health, stop."""
+        """Start vLLM with gpt2, verify health, stop.
+
+        Runs with GPU on trainbox (CPU mode not supported by vLLM image).
+        """
         from switchyard.config.loader import AppSettings
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(
             repo="gpt2",
-            extra_args={"cpu": True},
+            gpu_memory_utilization=0.3,
         )
         config = ModelConfig(
             backend="vllm",
@@ -351,7 +375,7 @@ class TestVLLMOnCPU:
         info = adapter.start(config, port=18000)
 
         try:
-            # Poll health until running (vLLM takes time to load model on CPU)
+            # Poll health until running (vLLM takes time to load model)
             for _ in range(30):
                 import time
                 time.sleep(3)
@@ -362,7 +386,7 @@ class TestVLLMOnCPU:
                 # Final status check with more detail
                 status = adapter.health(info)
                 assert status == "running", (
-                    "vLLM health check never succeeded on CPU after 90s"
+                    "vLLM health check never succeeded after 90s"
                 )
 
             # Verify endpoint uses configured backend host/scheme
