@@ -148,7 +148,7 @@ class VLLMAdapter(BackendAdapter):
         cli_args = self._build_cli_args(model_config.runtime)
 
         command = (
-            ["serve", "--host", "0.0.0.0", "--port", str(_INTERNAL_PORT)]
+            ["--host", "0.0.0.0", "--port", str(_INTERNAL_PORT)]
             + cli_args
         )
 
@@ -170,7 +170,11 @@ class VLLMAdapter(BackendAdapter):
             kwargs["environment"] = environment
         # GPU: request all available GPUs (vLLM requires GPU access)
         kwargs["device_requests"] = [
-            docker.types.DeviceRequest(count=-1, capabilities=[["gpu"]])
+            docker.types.DeviceRequest(
+                driver="nvidia",
+                count=-1,
+                capabilities=[["gpu"]],
+            )
         ]
         if model_config.resources.memory:
             kwargs["mem_limit"] = model_config.resources.memory
