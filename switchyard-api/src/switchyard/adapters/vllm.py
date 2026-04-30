@@ -146,7 +146,10 @@ class VLLMAdapter(BackendAdapter):
         """
         cli_args = self._build_cli_args(model_config.runtime)
 
-        command = ["serve"] + cli_args
+        command = (
+            ["serve", "--host", "0.0.0.0", "--port", str(_INTERNAL_PORT)]
+            + cli_args
+        )
 
         # Environment variables
         environment: dict[str, str] = {}

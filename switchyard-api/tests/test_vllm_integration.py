@@ -311,6 +311,7 @@ class TestCliArgsAgainstCompos:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.no_isolate
 class TestVLLMOnCPU:
     """Full vLLM adapter + CPU model test.
 
@@ -329,6 +330,9 @@ class TestVLLMOnCPU:
 
     def test_cpu_model_lifecycle(self) -> None:
         """Start vLLM with gpt2 on CPU, verify health, stop."""
+        from switchyard.config.loader import AppSettings
+
+        settings = AppSettings()
         runtime = VLLMRuntimeConfig(
             repo="gpt2",
             extra_args={"cpu": True},
@@ -339,7 +343,11 @@ class TestVLLMOnCPU:
             runtime=runtime,
         )
 
-        adapter = VLLMAdapter()
+        adapter = VLLMAdapter(
+            backend_host=settings.backend_host or "localhost",
+            backend_scheme=settings.backend_scheme or "http",
+            docker_network=settings.docker_network,
+        )
         info = adapter.start(config, port=18000)
 
         try:
@@ -357,8 +365,10 @@ class TestVLLMOnCPU:
                     "vLLM health check never succeeded on CPU after 90s"
                 )
 
-            # Verify endpoint
+            # Verify endpoint uses configured backend host/scheme
             endpoint = adapter.endpoint(info)
-            assert endpoint == "http://localhost:18000"
+            expected_host = settings.backend_host or "localhost"
+            expected_scheme = settings.backend_scheme or "http"
+            assert endpoint == f"{expected_scheme}://{expected_host}:18000"
         finally:
             adapter.stop(info)
