@@ -2,7 +2,7 @@
 
 **Title**: Switchyard MVP — Control Plane and Model Runtime Manager
 **ID**: SEP-001-02-PLAN-mvp-control-plane
-**Status**: Draft
+**Status**: Finalized
 **Date**: 2026-04-27
 **Track**: Lightweight
 **Spec**: `spec.md`
@@ -162,20 +162,20 @@ Non-goals: autoscaling, GPU scheduling, database, UI, implicit model loading, co
 
 ## Validation Plan
 
-### Quality Gates (from `DEV.md`)
-- [ ] `uv run pytest` — all tests pass
-- [ ] `uv run ruff check src --fix` — no lint errors
-- [ ] `uv run mypy src/switchyard` — no type errors
+### Quality Gates (from `AGENTS.md`)
+- [X] `uv run pytest` — 219 passed, 2 skipped
+- [X] `uv run ruff check src tests --fix` — all checks passed
+- [X] `uv run mypy src/switchyard` — success, 17 source files
 
 ### Success Criteria
-- [ ] Config loads and validates from YAML (valid and invalid cases)
-- [ ] Models can be loaded (202), polled for status, and unloaded via API
-- [ ] Orphan detection adopts running containers and removes crashed ones on startup
-- [ ] Chat completions route to correct backend container
-- [ ] Streaming responses proxy transparently with no buffering
-- [ ] Backend passthrough reaches backend-specific endpoints
-- [ ] Error responses match spec §13 status codes
-- [ ] vLLM adapter starts, health-checks, and serves requests in integration test
+- [X] Config loads and validates from YAML (valid and invalid cases)
+- [X] Models can be loaded (202), polled for status, and unloaded via API
+- [X] Orphan detection adopts running containers and removes crashed ones on startup
+- [X] Chat completions route to correct backend container
+- [X] Streaming responses proxy transparently with no buffering
+- [X] Backend passthrough reaches backend-specific endpoints
+- [X] Error responses match spec §13 status codes
+- [X] vLLM adapter starts, health-checks, and serves requests in integration test
 
 ---
 

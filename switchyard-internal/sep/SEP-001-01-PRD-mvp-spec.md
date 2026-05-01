@@ -1,4 +1,8 @@
-# Model Runtime Manager – Spec
+# Model Runtime Manager - Spec
+
+> **Planning note:** This document does not follow the current PRD template.
+> It is the original canonical scoping document for SEP-001 and is best
+> represented as the SEP-001 PRD within the current planning construct.
 
 ## 1. Purpose
 
@@ -331,6 +335,5 @@ On startup the control plane:
 - Adapters wrap containers (no sidecars required)
 
 ---
-
 
 
