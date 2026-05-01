@@ -1,95 +1,107 @@
 # Switchyard
 
-**A control plane for managing local LLM inference runtimes.**
+**A local control plane for launching, tuning, and routing requests to
+containerized LLM runtimes.**
 
-*This project is made with [pi.dev](https://pi.dev) and [Qwen 3.6 27B](https://huggingface.co/Qwen/Qwen3.6-27B-FP8)*
+Switchyard helps manage local inference setups where model files, runtime
+flags, GPU placement, cache mounts, Docker networking, ports, and backend health
+otherwise end up spread across shell scripts and compose files.
 
-Switchyard is not an inference engine. It is an orchestration and routing layer that manages the lifecycle of containerized LLM backends (vLLM, koboldcpp, exllamav2, SGLang) behind a unified API surface. Clients interact with Switchyard; Switchyard manages the containers.
+The project is currently focused on vLLM first, with the architecture shaped to
+support additional runtimes such as koboldcpp, exllamav2, and SGLang.
+
+---
+
+## Core Concepts
+
+Switchyard is organized around four durable concepts:
+
+- **Hosts** — machines or environments that can run inference containers.
+- **Runtimes** — backend engines such as vLLM, SGLang, koboldcpp, or exllamav2.
+- **Models** — logical model sources and model-family defaults.
+- **Deployments** — concrete combinations of model, runtime, host, placement,
+  and tuning overrides.
+
+The important distinction is:
+
+```text
+model + runtime + host + placement + overrides = deployment
+```
+
+A model is portable. A deployment is the specific way that model is run on a
+specific host with a specific runtime.
 
 ---
 
 ## What It Does
 
-- **Lifecycle management** — start, stop, health-check, and discover backend containers via Docker SDK
-- **Request routing** — proxy OpenAI-compatible `chat/completions` to the correct running backend, including transparent SSE streaming
-- **Backend abstraction** — each runtime engine is wrapped by a pluggable adapter; the control plane never knows CLI flags or container internals
-- **Orphan recovery** — on startup, detects and adopts containers still running from a previous session; removes crashed ones
-
-## What It Does Not Do (MVP)
-
-Autoscaling, GPU scheduling, persistent state, UI, config hot-reload, implicit model loading, batching.
+- Starts, stops, health-checks, and discovers backend containers through Docker.
+- Routes OpenAI-compatible requests to the correct running backend.
+- Wraps runtime engines behind pluggable backend adapters.
+- Keeps high-value runtime settings typed while preserving escape hatches for
+  backend-specific arguments.
+- Separates process-local bootstrap settings from durable managed config.
 
 ---
 
-## Architecture at a Glance
+## Architecture
 
+```text
+Client
+  |
+  v
+Switchyard API
+  |
+  +-- Router             -> proxies /v1/* requests to backend containers
+  +-- Lifecycle Manager  -> loads/unloads deployments and tracks status
+  +-- Config Resolver    -> resolves hosts/runtimes/models/deployments
+  +-- Adapter Registry   -> vLLM first, other runtimes later
 ```
-Client → Control API (FastAPI)
-         ├─ Router          → routes /v1/* to the right backend container
-         ├─ Lifecycle Mgr   → load/unload containers, health polls, orphan detection
-         └─ Adapter Registry → vLLM, koboldcpp, exllamav2, SGLang (pluggable)
-```
 
-**Key idea: Model ≠ Deployment.** A model is a logical identifier (`qwen-32b`). A deployment is a running container serving that model through a specific backend. One model maps to one active deployment.
-
----
-
-## How It Works
-
-1. **Config** — YAML file defines which models are available, which backend each uses, and runtime parameters (image, resource limits, backend-specific args). Env vars overlay global settings (port, log level).
-2. **Startup** — loads config, verifies Docker socket, scans for orphan containers (adopts running, removes crashed), auto-starts configured models, begins listening.
-3. **Load a model** — `POST /models/load` returns 202 immediately. Backend adapter starts a container on a sequentially-allocated port (base 8000). Background health polling transitions status from `loading` → `running` or `error`.
-4. **Inference** — `POST /v1/chat/completions` extracts the model name, verifies the deployment is running, and proxies the request. Streaming responses are forwarded transparently (SSE, no buffering).
-5. **Unload** — `POST /models/unload` stops and removes the container, releases its port.
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|-----------|
-| API framework | FastAPI + Uvicorn |
-| Config | Pydantic + PyYAML + pydantic-settings |
-| Container lifecycle | Docker SDK for Python |
-| HTTP proxy | httpx (async) |
-| Logging | structlog (JSON prod, console dev) |
-| Observability hooks | opentelemetry-api (SDK-agnostic) |
-| Testing | pytest + pytest-asyncio |
-| Quality | ruff + mypy |
-| Package manager | uv |
-
----
-
-## Project Structure
-
-```
-switchyard/
-├── switchyard-api/              # Python package (src/switchyard layout)
-│   ├── pyproject.toml
-│   ├── src/switchyard/          # Application code
-│   └── tests/
-├── switchyard-internal/         # Project governance & planning
-│   ├── process/                 # DEV.md, PYTHON.md, templates
-│   ├── sep/                     # SEP artifacts (PRD, PLAN, CONTEXT, etc.)
-│   └── docs/v0/                 # Spec drafts
-├── spec.md                      # Model Runtime Manager specification
-└── README.md                    # This file
-```
+Switchyard is a control and routing layer. The runtime containers still perform
+the actual inference.
 
 ---
 
 ## Development
 
-- **Workflow**: Follow `switchyard-internal/process/DEV.md` for phase sequencing, branching, commits, and PR conventions.
-- **Python standards**: See `switchyard-internal/process/PYTHON.md` (Python 3.12, native type syntax, TDD).
-- **Current effort**: SEP-001 — MVP control plane. See `switchyard-internal/sep/SEP-001-02-PLAN-mvp-control-plane.md` for the active task breakdown.
-
-### Quality Gates (run from `switchyard-api/`)
+Use the Makefile as the entry point for local commands:
 
 ```bash
-uv run pytest                     # all tests
-uv run ruff check src --fix       # lint & format
-uv run mypy src/switchyard        # type check
+make help
+```
+
+Project workflow and engineering standards live in:
+
+- `AGENTS.md`
+- `switchyard-internal/process/PYTHON.md`
+
+Python quality gates run from `switchyard-api/`:
+
+```bash
+uv run pytest
+uv run ruff check src tests --fix
+uv run mypy src/switchyard
+```
+
+---
+
+## Project Structure
+
+```text
+switchyard/
+├── AGENTS.md
+├── Makefile
+├── switchyard-api/
+│   ├── config.yaml
+│   ├── pyproject.toml
+│   ├── src/switchyard/
+│   └── tests/
+├── switchyard-internal/
+│   ├── planning/
+│   ├── process/
+│   └── sep/
+└── README.md
 ```
 
 ---
@@ -98,7 +110,16 @@ uv run mypy src/switchyard        # type check
 
 | Backend | Status |
 |---------|--------|
-| vLLM | First adapter (SEP-001) |
-| koboldcpp | Planned |
-| exllamav2 | Planned |
+| vLLM | First adapter |
 | SGLang | Planned |
+| koboldcpp | Planned |
+| llama.cpp | Planned |
+
+---
+
+## Local Coding Model + Agent
+
+Switchyard is an experiment in using a local model for software
+development. The project is made with [pi.dev](https://pi.dev) and
+[Qwen 3.6 27B](https://huggingface.co/Qwen/Qwen3.6-27B-FP8), with
+architectural consultation from Codex.

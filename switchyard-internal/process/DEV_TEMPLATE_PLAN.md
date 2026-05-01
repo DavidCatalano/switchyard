@@ -13,7 +13,7 @@
 
 High-level summary of how this PLAN executes the PRD objectives and respects ADR decisions.
 
-See [DEV.md](./DEV.md) for workflow phases, decision logging, quality gates, and specialized track references.
+See `AGENTS.md` for workflow phases, decision logging, quality gates, and specialized track references.
 
 ## Task Breakdown
 
@@ -67,12 +67,12 @@ _(Add additional phases as needed)_
 
 ## Validation Plan
 
-**Validation Commands**: See [DEV.md](./DEV.md) Section "Quality Gates" for complete validation command list.
+**Validation Commands**: See `AGENTS.md` Section "Quality Gates" for complete validation command list.
 
 ### Success Criteria Validation
 - [ ] [Specific success criterion from PRD]
 - [ ] [Another success criterion]
-- [ ] All quality gates pass (see DEV.md)
+- [ ] All quality gates pass (see `AGENTS.md`)
 - [ ] No regressions in existing functionality
 
 ---
