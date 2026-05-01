@@ -1,4 +1,37 @@
 global:
-  docker_network: model-runtime
+  docker_network: ai_net
   base_port: 8000
-  log_level: debug
+  log_level: info
+
+runtime_defaults:
+  vllm:
+    gpu_memory_utilization: 0.97
+    tensor_parallel_size: 2
+    dtype: auto
+    kv_cache_dtype: auto
+    enable_prefix_caching: true
+
+models:
+  qwen3-27b:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+
+    control:
+      auto_start: false
+
+    resources:
+      memory: null
+
+    runtime:
+      model: /data/LLM/oobabooga/models/Qwen3.6-27B-FP8
+      served_model_name: vllm-Qwen3.6-27B
+      max_model_len: 100000
+      max_num_seqs: 4
+      kv_cache_dtype: fp8_e4m3
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
+      enable_auto_tool_choice: true
+      disable_custom_all_reduce: true
+      speculative_config:
+        method: qwen3_next_mtp
+        num_speculative_tokens: 2
