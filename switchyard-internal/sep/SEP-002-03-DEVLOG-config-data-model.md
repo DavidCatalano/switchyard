@@ -16,6 +16,12 @@
   reference resolution, store path resolution, runtime cascade merge,
   container cascade merge, and .env docker_host override. 18 resolution tests.
   289 tests pass, ruff/mypy clean.
+- 2026-05-02 — Hardening pass for 4 findings:
+  - Cross-entity references now validated at load time (not resolve time)
+  - ResolvedDeployment gains runtime_name, backend_host, backend_scheme, port_range
+  - Store paths reject absolute paths and .. traversal; trailing slash normalization
+  - AppSettings consolidated into models.py (was duplicated in loader.py)
+  299 tests pass, ruff/mypy clean.
 
 ---
 
