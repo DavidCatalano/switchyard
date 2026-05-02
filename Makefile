@@ -51,15 +51,9 @@ typecheck:
 quality: lint typecheck test
 	@echo "✅ All quality gates passed"
 
-# vLLM CPU smoke test (requires Docker, no GPU needed)
-test-vllm-cpu:
-	cd $(API_DIR) && TEST_VLLM_CPU=1 uv run pytest -q -rs -s \
-		tests/test_vllm_integration.py::TestVLLMOnCPU::test_cpu_model_lifecycle
+# Integration tests (Docker required, marked @pytest.mark.integration)
+# Run with: make test (includes integration) or: cd switchyard-api && TEST_INTEGRATION=1 uv run pytest -m integration
 
-# vLLM GPU smoke test (requires Docker + accessible NVIDIA GPU + free VRAM)
-test-vllm-gpu:
-	cd $(API_DIR) && TEST_VLLM_GPU=1 uv run pytest -q -rs -s \
-		tests/test_vllm_integration.py::TestVLLMOnGPU::test_gpu_model_lifecycle
 
 # -------------------------------------------------------------------
 # Deployment Smoke Targets
@@ -86,27 +80,8 @@ docker-clean:
 	@echo "✅ Cleaned"
 
 # -------------------------------------------------------------------
-# Deployment Smoke Targets
-# -------------------------------------------------------------------
-load-tinyllama-cpu:
-	curl -s -X POST http://localhost:$(API_PORT)/deployments/load \
-		-H 'Content-Type: application/json' \
-		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
-
-unload-tinyllama-cpu:
-	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
-		-H 'Content-Type: application/json' \
-		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
-
-# -------------------------------------------------------------------
 # Service Management
 # -------------------------------------------------------------------
-
-unload-tinyllama-cpu:
-	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
-		-H 'Content-Type: application/json' \
-		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
-
 stop:
 	@echo "🛑 Stopping services..."
 	-lsof -ti tcp:$(API_PORT) | xargs kill 2>/dev/null || true
@@ -130,18 +105,18 @@ status:
 # -------------------------------------------------------------------
 help:
 	@echo "Switchyard Control Plane Commands:"
-	@echo "  tunnel         - Start SSH tunnel to remote Docker ($(SSH_HOST))"
-	@echo "  dev            - Start FastAPI development server"
-	@echo "  test           - Run pytest suite"
-	@echo "  lint           - Run ruff linter"
-	@echo "  typecheck      - Run mypy type checking"
-	@echo "  quality        - Run lint + typecheck + tests (full gates)"
-	@echo "  test-vllm-cpu  - Run vLLM CPU smoke test (no GPU needed)"
-	@echo "  test-vllm-gpu  - Run vLLM GPU smoke test (needs NVIDIA GPU)"
-	@echo "  status         - Check tunnel and API server status"
-	@echo "  docker-ps      - List containers on $(DOCKER_NETWORK) network"
-	@echo "  docker-clean   - Remove orphan switchyard containers"
-	@echo "  stop           - Stop the API server"
+	@echo "  tunnel                 - Start SSH tunnel to remote Docker ($(SSH_HOST))"
+	@echo "  dev                    - Start FastAPI development server"
+	@echo "  test                   - Run pytest suite"
+	@echo "  lint                   - Run ruff linter"
+	@echo "  typecheck              - Run mypy type checking"
+	@echo "  quality                - Run lint + typecheck + tests (full gates)"
+	@echo "  load-tinyllama-cpu     - Load TinyLlama CPU deployment via API"
+	@echo "  unload-tinyllama-cpu   - Unload TinyLlama CPU deployment via API"
+	@echo "  status                 - Check tunnel and API server status"
+	@echo "  docker-ps              - List containers on $(DOCKER_NETWORK) network"
+	@echo "  docker-clean           - Remove orphan switchyard containers"
+	@echo "  stop                   - Stop the API server"
 	@echo ""
 	@echo "Configuration (from $(ENV_FILE):)"
 	@echo "  SSH_HOST=$(SSH_HOST)        - Remote Docker host"
@@ -154,5 +129,7 @@ help:
 	@echo "  Terminal 1: make tunnel"
 	@echo "  Terminal 2: make dev"
 
-.PHONY: tunnel dev test lint typecheck quality test-vllm-cpu test-vllm-gpu docker-ps docker-clean stop status help
+.PHONY: tunnel dev test lint typecheck quality \
+	load-tinyllama-cpu unload-tinyllama-cpu \
+	docker-ps docker-clean stop status help
 .DEFAULT_GOAL := help
