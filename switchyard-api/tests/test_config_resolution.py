@@ -2,10 +2,10 @@
 
 Validates:
 - T2.1: YAML loader parses entity-based config into Config model
-- T2.2: Reference resolution (deployment → model/runtime/host)
-- T2.3: Store resolution (store name → host/container paths)
-- T2.4: Runtime cascade merge (runtime defaults → model → deployment → extra_args)
-- T2.5: Container cascade merge (host defaults → deployment overrides)
+- T2.2: Reference resolution (deployment -> model/runtime/host)
+- T2.3: Store resolution (store name -> host/container paths)
+- T2.4: Runtime cascade merge (runtime defaults -> model -> deployment -> extra_args)
+- T2.5: Container cascade merge (host defaults -> deployment overrides)
 - T2.6: ResolvedDeployment output shape
 - T2.7: Reference validation, store resolution, cascade merge, .env docker_host override
 - T2.8: Full realistic fixture resolution
@@ -136,8 +136,94 @@ class TestYAMLLoader:
             ConfigLoader.load_entity_config(tmp_path / "nope.yaml")
 
     def test_load_invalid_yaml_raises(self, tmp_path: Path) -> None:
-        path = _write_config(tmp_path, "{{invalid: yaml: [[[" )
+        path = _write_config(tmp_path, "{{invalid: yaml: [{{[")
         with pytest.raises(ValueError, match="invalid YAML"):
+            ConfigLoader.load_entity_config(path)
+
+    # Finding 1: cross-entity reference validation at load time
+    def test_load_validates_unknown_model_ref(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop: {}
+            runtimes:
+              vllm:
+                backend: vllm
+            models: {}
+            deployments:
+              d1:
+                model: nonexistent
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="unknown model"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_load_validates_unknown_runtime_ref(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop: {}
+            runtimes: {}
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: nonexistent
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="unknown runtime"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_load_validates_unknown_host_ref(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts: {}
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: nonexistent
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="unknown host"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_load_validates_unknown_store_ref(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  cache:
+                    host_path: /cache
+                    container_path: /cache
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="store 'models'"):
             ConfigLoader.load_entity_config(path)
 
 
@@ -161,7 +247,7 @@ class TestReferenceResolution:
     def test_unknown_model_raises(self, tmp_path: Path) -> None:
         content = dedent("""\
             hosts:
-              laptop: {}
+              laptop: {} 
             runtimes:
               vllm:
                 backend: vllm
@@ -173,9 +259,8 @@ class TestReferenceResolution:
                 host: laptop
         """)
         path = _write_config(tmp_path, content)
-        config = ConfigLoader.load_entity_config(path)
-        with pytest.raises(ValueError, match="nonexistent"):
-            resolve_deployment(config, "d1")
+        with pytest.raises(ValueError, match="unknown model"):
+            ConfigLoader.load_entity_config(path)
 
     def test_unknown_runtime_raises(self, tmp_path: Path) -> None:
         content = dedent("""\
@@ -194,9 +279,8 @@ class TestReferenceResolution:
                 host: laptop
         """)
         path = _write_config(tmp_path, content)
-        config = ConfigLoader.load_entity_config(path)
-        with pytest.raises(ValueError, match="nonexistent"):
-            resolve_deployment(config, "d1")
+        with pytest.raises(ValueError, match="unknown runtime"):
+            ConfigLoader.load_entity_config(path)
 
     def test_unknown_host_raises(self, tmp_path: Path) -> None:
         content = dedent("""\
@@ -216,9 +300,8 @@ class TestReferenceResolution:
                 host: nonexistent
         """)
         path = _write_config(tmp_path, content)
-        config = ConfigLoader.load_entity_config(path)
-        with pytest.raises(ValueError, match="nonexistent"):
-            resolve_deployment(config, "d1")
+        with pytest.raises(ValueError, match="unknown host"):
+            ConfigLoader.load_entity_config(path)
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +342,8 @@ class TestStoreResolution:
                 host: laptop
         """)
         path = _write_config(tmp_path, content)
-        config = ConfigLoader.load_entity_config(path)
-        with pytest.raises(ValueError, match="store 'models' not found"):
-            resolve_deployment(config, "d1")
+        with pytest.raises(ValueError, match="store 'models'"):
+            ConfigLoader.load_entity_config(path)
 
     def test_storage_override_replaces_path(self, tmp_path: Path) -> None:
         content = dedent("""\
@@ -293,6 +375,144 @@ class TestStoreResolution:
         assert resolved.model_host_path == "/data/models/override-model"
         assert resolved.model_container_path == "/models/override-model"
 
+    # Finding 3: reject absolute paths and .. traversal
+    def test_reject_absolute_path_in_model_source(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: /etc/passwd
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must be a relative path"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_dotdot_in_model_source(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: ../escape
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must not contain"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_absolute_path_in_storage_override(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                storage_overrides:
+                  path: /etc/passwd
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must be a relative path"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_dotdot_in_storage_override(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                storage_overrides:
+                  path: ../escape
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must not contain"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_trailing_slash_store_paths(self, tmp_path: Path) -> None:
+        """Store paths with trailing slashes produce clean joins."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models/
+                    container_path: /models/
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: my-model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.model_host_path == "/data/models/my-model"
+        assert resolved.model_container_path == "/models/my-model"
+
 
 # ---------------------------------------------------------------------------
 # T2.4 — Runtime cascade merge
@@ -300,7 +520,7 @@ class TestStoreResolution:
 
 
 class TestRuntimeCascade:
-    """Runtime config cascades: defaults → model → deployment → extra_args."""
+    """Runtime config cascades: defaults -> model -> deployment -> extra_args."""
 
     def test_cascade_merge_order(self, tmp_path: Path) -> None:
         # dtype and enable_prefix_caching come from runtime defaults
@@ -363,7 +583,7 @@ class TestRuntimeCascade:
 
 
 class TestContainerCascade:
-    """Container config cascades: host defaults → deployment overrides."""
+    """Container config cascades: host defaults -> deployment overrides."""
 
     def test_container_env_merge(self, tmp_path: Path) -> None:
         # HF_HOME from host, CUDA_VISIBLE_DEVICES from deployment override
@@ -426,6 +646,18 @@ class TestResolvedDeploymentShape:
         # Container env
         assert "HF_HOME" in resolved.container_environment
         assert "CUDA_VISIBLE_DEVICES" in resolved.container_environment
+
+    # Finding 2: ResolvedDeployment must have runtime_name, backend_host,
+    # backend_scheme, port_range
+    def test_resolved_has_identity_fields(self, tmp_path: Path) -> None:
+        path = _write_config(tmp_path, REALISTIC_YAML)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "qwen3-27b-vllm-trainbox")
+
+        assert resolved.runtime_name == "vllm"
+        assert resolved.backend_host == "trainbox"
+        assert resolved.backend_scheme == "http"
+        assert resolved.port_range == [18000, 18100]
 
 
 # ---------------------------------------------------------------------------
@@ -496,8 +728,12 @@ class TestRealisticFixture:
         # Identity
         assert resolved.deployment_name == "qwen3-27b-vllm-trainbox"
         assert resolved.model_name == "qwen3-27b-fp8"
+        assert resolved.runtime_name == "vllm"
         assert resolved.backend == "vllm"
         assert resolved.host_name == "trainbox"
+        assert resolved.backend_host == "trainbox"
+        assert resolved.backend_scheme == "http"
+        assert resolved.port_range == [18000, 18100]
 
         # Container
         assert resolved.image == "vllm/vllm-openai:latest"

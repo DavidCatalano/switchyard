@@ -41,7 +41,7 @@ def _docker_available() -> bool:
         pass
 
     # Fall back to SWITCHYARD_DOCKER_HOST from .env
-    from switchyard.config.loader import AppSettings
+    from switchyard.config.models import AppSettings
 
     settings = AppSettings()
     if settings.docker_host:
@@ -76,7 +76,7 @@ class TestDockerLifecycle:
 
     def test_start_creates_real_container(self) -> None:
         """start() creates a real Docker container that serves /health."""
-        from switchyard.config.loader import AppSettings
+        from switchyard.config.models import AppSettings
         from switchyard.core.docker import get_docker_client
 
         settings = AppSettings()
@@ -357,7 +357,7 @@ class TestVLLMOnCPU:
         """Start vLLM with gpt2 on CPU, verify health, stop."""
         import time
 
-        from switchyard.config.loader import AppSettings
+        from switchyard.config.models import AppSettings
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(
@@ -473,7 +473,7 @@ class TestVLLMOnGPU:
         """Start vLLM with gpt2 on GPU, verify health, stop."""
         import time
 
-        from switchyard.config.loader import AppSettings
+        from switchyard.config.models import AppSettings
 
         settings = AppSettings()
         runtime = VLLMRuntimeConfig(

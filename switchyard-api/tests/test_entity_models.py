@@ -531,6 +531,12 @@ class TestConfigTopLevel:
                     "trainbox": {
                         "backend_host": "trainbox",
                         "port_range": [18000, 18100],
+                        "stores": {
+                            "models": {
+                                "host_path": "/models",
+                                "container_path": "/models",
+                            },
+                        },
                     },
                 },
                 "runtimes": {

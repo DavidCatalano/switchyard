@@ -127,6 +127,35 @@ class ModelSource(BaseModel):
 
     _validate_source = field_validator("store", "path")(_non_empty_string)
 
+    @field_validator("path")
+    @classmethod
+    def _validate_relative_path(cls, value: str) -> str:
+        _require_safe_relative_path(value, "ModelSource.path")
+        return value
+
+
+def _require_safe_relative_path(value: str, field_name: str) -> None:
+    """Reject absolute paths and path traversal in store-relative paths.
+
+    These paths are within a named store, so they must be relative
+    and must not escape the store via ``..`` components.
+    """
+    if value.startswith("/"):
+        raise ValueError(
+            f"{field_name} must be a relative path (store-relative), "
+            f"not an absolute path: {value!r}"
+        )
+    if value.startswith("../") or value == "..":
+        raise ValueError(
+            f"{field_name} must not contain path traversal (..): {value!r}"
+        )
+    # Also check for .. in the middle of the path
+    parts = value.split("/")
+    if ".." in parts:
+        raise ValueError(
+            f"{field_name} must not contain path traversal (..): {value!r}"
+        )
+
 
 class ModelConfig(BaseModel):
     """Logical model source and portable model-family defaults.
@@ -169,6 +198,12 @@ class StorageOverrides(BaseModel):
 
     _validate_path = field_validator("path")(_non_empty_string)
 
+    @field_validator("path")
+    @classmethod
+    def _validate_relative_path(cls, value: str) -> str:
+        _require_safe_relative_path(value, "StorageOverrides.path")
+        return value
+
 
 class ContainerOverrides(BaseModel):
     """Container overrides for a deployment."""
@@ -202,12 +237,43 @@ class Config(BaseModel):
     """Top-level entity-based YAML configuration (SEP-002).
 
     Four top-level sections: hosts, runtimes, models, deployments.
+    Cross-entity references are validated at load time.
     """
 
     hosts: dict[str, HostConfig] = Field(default_factory=dict)
     runtimes: dict[str, RuntimeConfig] = Field(default_factory=dict)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
     deployments: dict[str, DeploymentConfig] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _validate_references(self) -> Config:
+        """Validate all deployment references against known entities."""
+        for dep_name, dep in self.deployments.items():
+            if dep.model not in self.models:
+                raise ValueError(
+                    f"deployment {dep_name!r} references unknown model "
+                    f"{dep.model!r}"
+                )
+            if dep.runtime not in self.runtimes:
+                raise ValueError(
+                    f"deployment {dep_name!r} references unknown runtime "
+                    f"{dep.runtime!r}"
+                )
+            if dep.host not in self.hosts:
+                raise ValueError(
+                    f"deployment {dep_name!r} references unknown host "
+                    f"{dep.host!r}"
+                )
+            # Validate store reference against host stores
+            model_cfg = self.models[dep.model]
+            host_cfg = self.hosts[dep.host]
+            store_name = model_cfg.source.store
+            if store_name not in host_cfg.stores:
+                raise ValueError(
+                    f"deployment {dep_name!r}: model {dep.model!r} references "
+                    f"store {store_name!r} not found on host {dep.host!r}"
+                )
+        return self
 
 
 @dataclass
@@ -224,8 +290,14 @@ class ResolvedDeployment:
     # Identity
     deployment_name: str
     model_name: str
+    runtime_name: str
     backend: str
     host_name: str
+
+    # Host reachability
+    backend_host: str
+    backend_scheme: str
+    port_range: list[int]
 
     # Container
     image: str
@@ -258,6 +330,9 @@ class AppSettings(BaseSettings):
 
     Answers: "how does this Switchyard process start on this machine?"
     Owned by .env, not config.yaml.
+
+    Fields from both SEP-001 (legacy loader) and SEP-002 (entity loader)
+    are present here for backward compatibility during transition.
     """
 
     model_config = {
@@ -273,6 +348,14 @@ class AppSettings(BaseSettings):
     api_port: int | None = None
     active_host: str | None = None
     docker_host: str | None = None
+
+    # Legacy SEP-001 fields (to be removed in Phase 3)
+    base_port: int | None = None
+    docker_network: str | None = None
+    backend_host: str | None = None
+    backend_scheme: str | None = None
+    health_interval_seconds: float | None = None
+    health_timeout_seconds: float | None = None
 
 
 # =====================================================================

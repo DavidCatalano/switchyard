@@ -14,9 +14,10 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from pydantic_settings import BaseSettings
-
+# Use the canonical AppSettings from models.py (SEP-002)
+# This replaces the duplicate AppSettings class that was here.
 from switchyard.config.models import (
+    AppSettings,
     Config,
     DeploymentConfig,
     HostConfig,
@@ -28,30 +29,6 @@ from switchyard.config.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-class AppSettings(BaseSettings):
-    """Environment variable configuration for the control plane.
-
-    Env vars override YAML values after loading.
-    Reads from ``.env`` file in CWD when present.
-    """
-
-    model_config = {
-        "env_prefix": "SWITCHYARD_",
-        "env_file": ".env",
-        "env_file_encoding": "utf-8",
-    }
-
-    config_path: str | None = None
-    base_port: int | None = None
-    log_level: str | None = None
-    docker_host: str | None = None
-    backend_host: str | None = None
-    backend_scheme: str | None = None
-    docker_network: str | None = None
-    health_interval_seconds: float | None = None
-    health_timeout_seconds: float | None = None
 
 
 def _deep_merge(
@@ -219,21 +196,16 @@ class ConfigLoader:
 def resolve_deployment(
     config: Config,
     deployment_name: str,
-    *,
-    # Internal test hooks — bypass lookup for targeted unit tests
-    _model_config: ModelConfig | None = None,
-    _runtime_config: RuntimeConfig | None = None,
-    _host_config: HostConfig | None = None,
 ) -> ResolvedDeployment:
     """Resolve a named deployment into a complete ResolvedDeployment.
 
     Steps:
-      1. Look up the deployment by name
+      1. Look up the deployment by name (references already validated at load)
       2. Resolve model, runtime, host references
       3. Resolve store paths (host path + container path)
-      4. Cascade-merge runtime args: runtime defaults → model runtime_defaults
-         → deployment runtime_overrides → deployment extra_args
-      5. Cascade-merge container config: host container_defaults → deployment
+      4. Cascade-merge runtime args: runtime defaults -> model runtime_defaults
+         -> deployment runtime_overrides -> deployment extra_args
+      5. Cascade-merge container config: host container_defaults -> deployment
          container_overrides
       6. Apply .env docker_host override
       7. Produce ResolvedDeployment
@@ -244,30 +216,13 @@ def resolve_deployment(
             f"deployment {deployment_name!r} not found in config"
         )
 
-    # 1. Resolve references
-    model_cfg = _model_config or config.models.get(deployment.model)
-    if model_cfg is None:
-        raise ValueError(
-            f"deployment {deployment_name!r} references unknown model "
-            f"{deployment.model!r}"
-        )
-
-    runtime_cfg = _runtime_config or config.runtimes.get(deployment.runtime)
-    if runtime_cfg is None:
-        raise ValueError(
-            f"deployment {deployment_name!r} references unknown runtime "
-            f"{deployment.runtime!r}"
-        )
-
-    host_cfg = _host_config or config.hosts.get(deployment.host)
-    if host_cfg is None:
-        raise ValueError(
-            f"deployment {deployment_name!r} references unknown host "
-            f"{deployment.host!r}"
-        )
+    # 1. Resolve references (already validated at load, but lookup here)
+    model_cfg = config.models[deployment.model]
+    runtime_cfg = config.runtimes[deployment.runtime]
+    host_cfg = config.hosts[deployment.host]
 
     # 2. Resolve store paths
-    model_path = _resolve_store_path(
+    host_path, container_path = _resolve_store_path(
         host_cfg, deployment, model_cfg,
     )
 
@@ -297,12 +252,16 @@ def resolve_deployment(
     return ResolvedDeployment(
         deployment_name=deployment_name,
         model_name=deployment.model,
+        runtime_name=deployment.runtime,
         backend=runtime_cfg.backend,
         host_name=deployment.host,
+        backend_host=host_cfg.backend_host,
+        backend_scheme=host_cfg.backend_scheme,
+        port_range=host_cfg.port_range,
         image=image,
         internal_port=runtime_cfg.container_defaults.internal_port,
-        model_host_path=model_path.host_path,
-        model_container_path=model_path.container_path,
+        model_host_path=host_path,
+        model_container_path=container_path,
         accelerator_ids=accelerator_ids,
         docker_host=docker_host,
         docker_network=host_cfg.docker_network,
@@ -317,13 +276,12 @@ def _resolve_store_path(
     host_cfg: HostConfig,
     deployment: DeploymentConfig,
     model_cfg: ModelConfig,
-) -> Any:
+) -> tuple[str, str]:
     """Resolve store reference to host/container paths.
 
-    Returns a SimpleNamespace with host_path and container_path.
+    Returns (host_path, container_path) with proper slash handling.
+    Absolute paths and .. traversal are rejected by model validators.
     """
-    from types import SimpleNamespace
-
     store_name = model_cfg.source.store
     store_cfg = host_cfg.stores.get(store_name)
     if store_cfg is None:
@@ -338,9 +296,13 @@ def _resolve_store_path(
         else model_cfg.source.path
     )
 
-    return SimpleNamespace(
-        host_path=f"{store_cfg.host_path}/{model_path}",
-        container_path=f"{store_cfg.container_path}/{model_path}",
+    # Normalize store base paths (strip trailing slashes)
+    host_base = store_cfg.host_path.rstrip("/")
+    container_base = store_cfg.container_path.rstrip("/")
+
+    return (
+        f"{host_base}/{model_path}",
+        f"{container_base}/{model_path}",
     )
 
 
