@@ -68,7 +68,6 @@ def docker_available():
 
 
 @pytest.mark.skipif(not _docker_available(), reason="Docker not available")
-@pytest.mark.integration
 class TestVLLMDocker:
     """Integration tests requiring a Docker daemon."""
 
