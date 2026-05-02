@@ -62,6 +62,19 @@ test-vllm-gpu:
 		tests/test_vllm_integration.py::TestVLLMOnGPU::test_gpu_model_lifecycle
 
 # -------------------------------------------------------------------
+# Deployment Smoke Targets
+# -------------------------------------------------------------------
+load-tinyllama-cpu:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/load \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
+
+unload-tinyllama-cpu:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
+
+# -------------------------------------------------------------------
 # Docker
 # -------------------------------------------------------------------
 docker-ps:
@@ -73,8 +86,27 @@ docker-clean:
 	@echo "✅ Cleaned"
 
 # -------------------------------------------------------------------
+# Deployment Smoke Targets
+# -------------------------------------------------------------------
+load-tinyllama-cpu:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/load \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
+
+unload-tinyllama-cpu:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
+
+# -------------------------------------------------------------------
 # Service Management
 # -------------------------------------------------------------------
+
+unload-tinyllama-cpu:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
+
 stop:
 	@echo "🛑 Stopping services..."
 	-lsof -ti tcp:$(API_PORT) | xargs kill 2>/dev/null || true

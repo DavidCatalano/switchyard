@@ -317,34 +317,49 @@ def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
 
 def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     """Stream SSE response from backend to client transparently."""
-
-    def _generate() -> Any:
-        with httpx.Client(timeout=10.0) as client:
-            try:
-                with client.stream("POST", url, json=body) as response:
-                    yield from response.iter_bytes()
-            except httpx.TimeoutException:
-                # Re-raise to let caller handle error status
-                raise
-            except httpx.ConnectError:
-                raise
+    client: httpx.Client | None = None
+    stream_ctx: Any | None = None
 
     try:
-        return StreamingResponse(
-            _generate(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache"},
-        )
+        client = httpx.Client(timeout=10.0)
+        stream_ctx = client.stream("POST", url, json=body)
+        response = stream_ctx.__enter__()
     except httpx.TimeoutException:
+        if client is not None:
+            client.close()
         return JSONResponse(
             status_code=504,
             content={"detail": "request timeout"},
         )
     except httpx.ConnectError:
+        if client is not None:
+            client.close()
         return JSONResponse(
             status_code=503,
             content={"detail": "backend unavailable"},
         )
+
+    def _generate() -> Any:
+        try:
+            yield from response.iter_bytes()
+        finally:
+            assert stream_ctx is not None
+            assert client is not None
+            stream_ctx.__exit__(None, None, None)
+            client.close()
+
+    headers = getattr(response, "headers", {}) or {}
+    media_type = (
+        headers.get("content-type", "text/event-stream")
+        if isinstance(headers, dict)
+        else "text/event-stream"
+    )
+    return StreamingResponse(
+        _generate(),
+        status_code=response.status_code,
+        media_type=media_type,
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

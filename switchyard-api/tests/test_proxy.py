@@ -205,6 +205,80 @@ class TestChatCompletionsProxy:
         assert resp.status_code == 200
         assert b"choices" in resp.content
 
+    def test_streaming_upstream_unreachable_returns_503(self) -> None:
+        """Streaming chat returns 503 when upstream stream cannot open."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        stream_ctx = MagicMock()
+        stream_ctx.__enter__.side_effect = httpx.ConnectError("refused")
+        mock_client = MagicMock()
+        mock_client.stream.return_value = stream_ctx
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-deployment",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "backend unavailable"}
+        mock_client.close.assert_called_once()
+
+    def test_streaming_upstream_timeout_returns_504(self) -> None:
+        """Streaming chat returns 504 when upstream stream setup times out."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_client = MagicMock()
+        mock_client.stream.side_effect = httpx.TimeoutException("timeout")
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-deployment",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+
+        assert resp.status_code == 504
+        assert resp.json() == {"detail": "request timeout"}
+        mock_client.close.assert_called_once()
+
     def test_upstream_unreachable_returns_503(self) -> None:
         """Returns 503 when backend is unreachable."""
         from switchyard.core.adapter import DeploymentInfo

@@ -42,6 +42,14 @@ runtimes:
       enable_prefix_caching: true
     container_defaults:
       internal_port: 7113
+  vllm-cpu:
+    backend: vllm
+    image: vllm/vllm-openai-cpu:latest-x86_64
+    defaults:
+      device: cpu
+      dtype: bfloat16
+    container_defaults:
+      internal_port: 8000
 
 models:
   qwen3-27b-fp8:
@@ -52,6 +60,12 @@ models:
       served_model_name: vllm-Qwen3.6-27B
       reasoning_parser: qwen3
       tool_call_parser: qwen3_coder
+  tinyllama-1.1b-chat:
+    source:
+      store: models
+      path: TinyLlama-1.1B-Chat-v1.0
+    defaults:
+      served_model_name: tinyllama-1.1b-chat
 
 deployments:
   qwen3-27b-fp8-vllm-trainbox:
@@ -74,3 +88,9 @@ deployments:
     container_overrides:
       environment:
         CUDA_VISIBLE_DEVICES: "0,1"
+  tinyllama-1.1b-chat-vllm-cpu-trainbox:
+    model: tinyllama-1.1b-chat
+    runtime: vllm-cpu
+    host: trainbox
+    runtime_overrides:
+      max_model_len: 2048
