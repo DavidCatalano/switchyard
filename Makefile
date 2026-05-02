@@ -19,6 +19,9 @@ DOCKER_HOST    ?= $(or $(_env_docker),tcp://127.0.0.1:2375)
 DOCKER_NETWORK ?= $(or $(_env_network),model-runtime)
 API_PORT       ?= 8000
 
+# Export for child processes (docker SDK, Makefile targets)
+export DOCKER_HOST
+
 # Derive SSH tunnel port from Docker host URL (tcp://127.0.0.1:2375 → 2375)
 DOCKER_PORT := $(or $(shell echo $(DOCKER_HOST) | sed -n 's/.*:\([0-9]\+\)$$/\1/p'),2375)
 
