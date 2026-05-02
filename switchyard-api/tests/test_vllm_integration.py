@@ -16,7 +16,7 @@ from typing import Any
 import pytest
 from docker.errors import APIError, DockerException
 
-from switchyard.config.models import ResolvedDeployment
+from switchyard.config.models import ResolvedDeployment, VLLMRuntimeConfig
 
 
 def _docker_available() -> bool:
@@ -90,8 +90,11 @@ class TestVLLMDocker:
         )
         adapter = VLLMAdapter()
 
-        # Verify CLI args are generated correctly
-        cli_args = adapter._build_cli_args(resolved.runtime_args)
+        # Validate runtime_args as typed config, then build CLI args
+        from switchyard.config.models import VLLMRuntimeConfig
+
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        cli_args = adapter._build_cli_args(runtime)
         assert isinstance(cli_args, list)
         assert any("--model" in arg for arg in cli_args)
 
@@ -114,7 +117,8 @@ class TestVLLMDocker:
             },
         )
         adapter = VLLMAdapter()
-        args = adapter._build_cli_args(resolved.runtime_args)
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        args = adapter._build_cli_args(runtime)
 
         assert isinstance(args, list)
         assert all(isinstance(a, str) for a in args)

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
@@ -69,16 +70,8 @@ class TestProxyErrors:
 
     def test_chat_completions_no_deployment(self) -> None:
         """Returns 404 when deployment not found."""
-        from switchyard.core.lifecycle import LifecycleManager
-        from switchyard.core.state import DeploymentStateManager
-
         app = create_app()
-        app.state.manager = MagicMock(spec=LifecycleManager)
-        mock_state = MagicMock(spec=DeploymentStateManager)
-        mock_state.get.side_effect = KeyError("not found")
-        mock_state.list_deployments.return_value = []
-        app.state.manager.state = mock_state
-
+        # Real manager's state is empty -> 404
         client = TestClient(app)
         resp = client.post(
             "/v1/chat/completions",
@@ -88,43 +81,74 @@ class TestProxyErrors:
 
     def test_backends_passthrough_unknown_deployment(self) -> None:
         """Returns 404 for deployment name not in state."""
-        from switchyard.core.lifecycle import LifecycleManager
-        from switchyard.core.state import DeploymentStateManager
-
         app = create_app()
-        app.state.manager = MagicMock(spec=LifecycleManager)
-        mock_state = MagicMock(spec=DeploymentStateManager)
-        mock_state.get.side_effect = KeyError("not found")
-        mock_state.list_deployments.return_value = []
-        app.state.manager.state = mock_state
-
+        # Real manager's state is empty -> 404
         client = TestClient(app)
         resp = client.post("/v1/backends/nonexistent/models", json={})
         assert resp.status_code == 404
 
-    def test_chat_completions_upstream_unreachable(self) -> None:
-        """Proxy returns 503 when backend is unreachable (connect error)."""
+    def test_chat_completions_upstream_timeout(self) -> None:
+        """Returns 504 when backend request times out."""
         from switchyard.core.adapter import DeploymentInfo
 
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.TimeoutException("timeout")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
         app = create_app()
-        # Use the real manager's state (captured by route closures)
         info = DeploymentInfo(
             model_name="test-deployment",
             backend="vllm",
             port=9001,
             status="running",
             container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
         )
         app.state.manager.state.add(info)
 
-        client = TestClient(app)
-        # Proxy will try to connect to localhost:9001 which fails
-        resp = client.post(
-            "/v1/chat/completions",
-            json={
-                "model": "test-deployment",
-                "messages": [{"role": "user", "content": "Hi"}],
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "test-deployment", "messages": []},
+            )
+        assert resp.status_code == 504
+
+    def test_backends_passthrough_upstream_error(self) -> None:
+        """Returns backend error code for backend passthrough."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_response = MagicMock()
+        mock_response.status_code = 429
+        mock_response.json.return_value = {"error": "rate limited"}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
             },
         )
-        # Connection refused to local backend returns 503
-        assert resp.status_code == 503
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/backends/test-deployment/models",
+                json={},
+            )
+        assert resp.status_code == 429
+        assert resp.json()["error"] == "rate limited"

@@ -16,7 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from switchyard.adapters.vllm import VLLMAdapter
-from switchyard.config.models import VLLMRuntimeConfig
+from switchyard.config.models import ResolvedDeployment, VLLMRuntimeConfig
 from switchyard.core.adapter import DeploymentInfo
 
 
@@ -134,3 +134,76 @@ class TestVLLMAdapter:
         })
         args = adapter._build_cli_args(runtime)
         assert "--model" in args
+
+    def test_start_passes_docker_kwargs(self, adapter: VLLMAdapter) -> None:
+        """start() passes correct volumes, devices, env, port, network to Docker.
+
+        Covers T4.9 (adapter launch), T4.15 (store mounts), T4.16 (docker_host).
+        """
+        resolved = ResolvedDeployment(
+            deployment_name="gpu-test",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=["0", "1"],
+            docker_host="unix:///var/run/docker.sock",
+            docker_network="model-runtime",
+            runtime_args={"model": "/models/test"},
+            container_environment={"CUDA_VISIBLE_DEVICES": "0,1"},
+            container_options={"mem_limit": "32g"},
+            store_mounts={
+                "/host/models": {"bind": "/models", "mode": "ro"},
+                "/host/cache": {"bind": "/cache", "mode": "rw"},
+            },
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "abc123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        info = adapter.start(resolved, 9001)
+
+        assert info.container_id == "abc123"
+        assert info.port == 9001
+
+        # Verify containers.run was called with correct kwargs
+        call_kwargs = mock_containers.run.call_args.kwargs
+        assert call_kwargs["image"] == "vllm/vllm-openai:latest"
+        assert call_kwargs["ports"] == {8000: 9001}
+        assert call_kwargs["network"] == "model-runtime"
+        assert call_kwargs["detach"] is True
+
+        # T4.15: store mounts (volumes)
+        assert "/host/models" in call_kwargs["volumes"]
+        assert "/host/cache" in call_kwargs["volumes"]
+
+        # T4.9: device requests for GPU accelerators
+        assert len(call_kwargs["device_requests"]) == 1
+        dev_req = call_kwargs["device_requests"][0]
+        assert dev_req.driver == "nvidia"
+        assert set(dev_req.device_ids) == {"0", "1"}
+
+        # T4.9: environment merge
+        assert call_kwargs["environment"]["CUDA_VISIBLE_DEVICES"] == "0,1"
+
+        # T4.9: container options
+        assert call_kwargs["mem_limit"] == "32g"
+
+        # Command includes --host 0.0.0.0 and --port 8000
+        command = call_kwargs["command"]
+        assert "--host" in command
+        assert "0.0.0.0" in command
+        assert "--port" in command
+        assert "8000" in command

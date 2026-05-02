@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 from starlette.testclient import TestClient
 
@@ -68,7 +69,7 @@ class TestChatCompletionsProxy:
     """Tests for POST /v1/chat/completions passthrough."""
 
     def test_no_active_deployment_returns_404(self) -> None:
-
+        """Returns 404 when deployment not found in state."""
         app = create_app()
         # Real manager's state is empty, so deployment not found -> 404
 
@@ -79,23 +80,155 @@ class TestChatCompletionsProxy:
         )
         assert resp.status_code == 404
 
+    def test_deployment_not_running_returns_400(self) -> None:
+        """Returns 400 when deployment exists but is not running."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        stopped_info = DeploymentInfo(
+            model_name="stopped-deployment",
+            backend="vllm",
+            port=9001,
+            status="stopped",
+            container_id="stopped-123",
+        )
+        app.state.manager.state.add(stopped_info)
+
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "stopped-deployment"},
+        )
+        assert resp.status_code == 400
+
+    def test_non_streaming_proxy_success(self) -> None:
+        """Non-streaming chat proxies to backend and returns response."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "choices": [{"message": {"content": "Hello"}}],
+        }
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-deployment",
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+        assert resp.status_code == 200
+        assert resp.json()["choices"][0]["message"]["content"] == "Hello"
+
+    def test_streaming_proxy_success(self) -> None:
+        """Streaming chat proxies to backend and returns SSE response."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        sse_data = b"data: {\"choices\": []}\n\n"
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.iter_bytes.return_value = [sse_data]
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-deployment",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+        assert resp.status_code == 200
+        assert b"choices" in resp.content
+
+    def test_upstream_unreachable_returns_503(self) -> None:
+        """Returns 503 when backend is unreachable."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.ConnectError("refused")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "test-deployment", "messages": []},
+            )
+        assert resp.status_code == 503
+
 
 class TestBackendsPassthrough:
     """Tests for /v1/backends/{deployment}/{path:path} proxy."""
 
     def test_unknown_deployment_returns_404(self) -> None:
+        """Returns 404 for deployment not in state."""
         app = create_app()
-        # Real manager's state is empty, so deployment not found -> 404
 
         client = TestClient(app)
         resp = client.post("/v1/backends/nonexistent/models", json={})
         assert resp.status_code == 404
 
     def test_deployment_not_running_returns_400(self) -> None:
+        """Returns 400 when deployment is not running."""
         from switchyard.core.adapter import DeploymentInfo
 
         app = create_app()
-        # Use real manager's state (captured by route closures)
         stopped_info = DeploymentInfo(
             model_name="stopped-deployment",
             backend="vllm",
@@ -108,3 +241,38 @@ class TestBackendsPassthrough:
         client = TestClient(app)
         resp = client.post("/v1/backends/stopped-deployment/models", json={})
         assert resp.status_code == 400
+
+    def test_backend_passthrough_success(self) -> None:
+        """Backend passthrough forwards to backend and returns response."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": [{"id": "text-embedding-3"}]}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/backends/test-deployment/embeddings",
+                json={"input": "hello"},
+            )
+        assert resp.status_code == 200
+        assert resp.json()["data"][0]["id"] == "text-embedding-3"

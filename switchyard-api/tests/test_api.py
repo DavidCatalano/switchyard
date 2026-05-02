@@ -11,7 +11,7 @@ Validates:
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -67,44 +67,47 @@ def _mock_docker():
         yield mock
 
 
-@pytest.fixture
-def app():
-    """Create the FastAPI app with mocked lifecycle."""
-    from switchyard.core.lifecycle import LifecycleManager
-    from switchyard.core.state import DeploymentStateManager
-
-    app = create_app()
-    app.state.manager = MagicMock(spec=LifecycleManager)
-    app.state.manager.state = MagicMock(spec=DeploymentStateManager)
-    app.state.manager.state.list_deployments.return_value = []
-    app.state.manager.state.get.side_effect = KeyError("not found")
-    app.state.manager.load_model = AsyncMock()
-    app.state.manager.unload_model = AsyncMock()
-    return app
-
-
-@pytest.fixture
-def client(app):
-    return TestClient(app)
-
-
 class TestHealth:
-    def test_health_endpoint(self, client: TestClient) -> None:
-        response = client.get("/health")
+    def test_health_endpoint(self) -> None:
+        app = create_app()
+        response = TestClient(app).get("/health")
         assert response.status_code == 200
 
 
 class TestDeploymentRoutes:
     """Route tests for /deployments endpoints (T4.10)."""
 
-    def test_list_deployments(self, client: TestClient) -> None:
-        response = client.get("/deployments")
+    def test_list_deployments(self) -> None:
+        """Empty state returns empty list."""
+        app = create_app()
+        response = TestClient(app).get("/deployments")
         assert response.status_code == 200
         assert response.json() == []
 
-    def test_load_deployment_unknown(self, client: TestClient) -> None:
+    def test_list_deployments_with_entries(self) -> None:
+        """State entries appear in deployment list."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+        )
+        app.state.manager.state.add(info)
+
+        response = TestClient(app).get("/deployments")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["deployment_name"] == "test-deployment"
+
+    def test_load_deployment_unknown(self) -> None:
         """Loading an unknown deployment raises 404."""
-        response = client.post(
+        app = create_app()
+        response = TestClient(app).post(
             "/deployments/load",
             json={"deployment": "nonexistent"},
         )
@@ -114,8 +117,7 @@ class TestDeploymentRoutes:
         """Loading a known deployment calls resolve_deployment + load_model."""
         app = create_app()
 
-        client = TestClient(app)
-        response = client.post(
+        response = TestClient(app).post(
             "/deployments/load",
             json={"deployment": "test-deployment"},
         )
@@ -125,8 +127,10 @@ class TestDeploymentRoutes:
         info = app.state.manager.state.get("test-deployment")
         assert info.status in ("loading", "running")
 
-    def test_unload_deployment_unknown(self, client: TestClient) -> None:
-        response = client.post(
+    def test_unload_deployment_unknown(self) -> None:
+        """Unloading an unknown deployment raises 404."""
+        app = create_app()
+        response = TestClient(app).post(
             "/deployments/unload",
             json={"deployment": "nonexistent"},
         )
@@ -138,54 +142,75 @@ class TestDeploymentRoutes:
 
         app = create_app()
         # Pre-populate state so unload finds it
-        mock_info = DeploymentInfo(
+        info = DeploymentInfo(
             model_name="test-deployment",
             backend="vllm",
             port=9001,
             status="running",
             container_id="abc123",
         )
-        app.state.manager.state.add(mock_info)
+        app.state.manager.state.add(info)
 
-        client = TestClient(app)
-        response = client.post(
+        response = TestClient(app).post(
             "/deployments/unload",
             json={"deployment": "test-deployment"},
         )
 
         assert response.status_code == 200
 
-    def test_status_unknown(self, client: TestClient) -> None:
-        response = client.get("/deployments/nonexistent/status")
+    def test_status_unknown(self) -> None:
+        """Status of unknown deployment returns 404."""
+        app = create_app()
+        response = TestClient(app).get("/deployments/nonexistent/status")
         assert response.status_code == 404
+
+    def test_status_known(self) -> None:
+        """Status of known deployment returns its status."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+        )
+        app.state.manager.state.add(info)
+
+        response = TestClient(app).get("/deployments/test-deployment/status")
+        assert response.status_code == 200
+        assert response.json()["status"] == "running"
 
 
 class TestOpenAIProxy:
     """OpenAI-compatible passthrough route tests (T4.11)."""
 
-    def test_chat_completions_route_exists(self, client: TestClient) -> None:
+    def test_chat_completions_route_exists(self) -> None:
         """POST /v1/chat/completions exists in route table."""
-        route_names = [r.path for r in client.app.routes]
+        app = create_app()
+        route_names = [r.path for r in app.routes]
         assert "/v1/chat/completions" in route_names
 
-    def test_chat_completions_no_active_deployment(self, client: TestClient) -> None:
+    def test_chat_completions_no_active_deployment(self) -> None:
         """Chat completions returns 404 when deployment not found."""
-        response = client.post(
+        app = create_app()
+        response = TestClient(app).post(
             "/v1/chat/completions",
             json={"model": "nonexistent"},
         )
         assert response.status_code == 404
 
-    def test_backends_route_exists(self, client: TestClient) -> None:
+    def test_backends_route_exists(self) -> None:
         """GET /v1/backends/{deployment}/{path:path} exists in route table."""
-        route_names = [r.path for r in client.app.routes]
+        app = create_app()
+        route_names = [r.path for r in app.routes]
         assert any("backends" in r for r in route_names)
 
-    def test_backends_passthrough_unknown_deployment(
-        self, client: TestClient,
-    ) -> None:
+    def test_backends_passthrough_unknown_deployment(self) -> None:
         """Backend proxy returns 404 for unknown deployment."""
-        response = client.post(
+        app = create_app()
+        response = TestClient(app).post(
             "/v1/backends/nonexistent/models",
             json={},
         )

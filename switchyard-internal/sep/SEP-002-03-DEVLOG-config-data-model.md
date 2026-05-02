@@ -29,6 +29,19 @@
 - 2026-05-02 — Phase 4 complete (T4.1–T4.16). Legacy tests migrated to the
   entity/deployment model; two superseded config test files deleted. 209 tests
   pass, 3 Docker integration tests skipped, ruff/mypy clean.
+- 2026-05-02 — Post-review findings fixes:
+  - test_vllm_integration.py:94 — _build_cli_args() called with dict instead of
+    VLLMRuntimeConfig; fixed with model_validate() in integration tests
+  - test_vllm_adapter.py — added test_start_passes_docker_kwargs() covering
+    T4.9 (volumes, devices, env), T4.15 (store_mounts), T4.16 (docker_host)
+  - test_api.py — removed app.state.manager replacement after routes registered;
+    now uses real captured manager's state intentionally
+  - test_proxy.py — added positive proxy tests for non-streaming chat, streaming
+    chat, and backend passthrough (T4.11 coverage restored)
+  - test_errors.py — replaced mock manager with real manager state; added
+    upstream timeout (504) and backend passthrough error tests
+  - pyproject.toml — registered pytest.mark.integration marker
+  218 tests pass, 3 skipped, ruff/mypy clean.
 
 ---
 
