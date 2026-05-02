@@ -1,29 +1,31 @@
 # Switchyard — Control Plane Makefile
 #
-# Reads configuration from switchyard-api/.env when present.
+# Reads API_HOST and API_PORT from switchyard-api/.env when present.
 # Override any variable on the command line (e.g., make API_PORT=9000 dev).
 
 API_DIR    := switchyard-api
 ENV_FILE   := $(API_DIR)/.env
 
 # -------------------------------------------------------------------
-# Source values from .env (sensible defaults for local Docker)
+# Source values from .env (opt-in remote Docker, local Docker is default)
 # -------------------------------------------------------------------
-_env_backend  := $(shell grep -s '^SWITCHYARD_BACKEND_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 _env_docker   := $(shell grep -s '^SWITCHYARD_DOCKER_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
-_env_network  := $(shell grep -s '^SWITCHYARD_DOCKER_NETWORK=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 _env_api_host := $(shell grep -s '^SWITCHYARD_API_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 _env_api_port := $(shell grep -s '^SWITCHYARD_API_PORT=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 
 # Command-line ?= takes precedence over .env-sourced values
-SSH_HOST       ?= $(or $(_env_backend),localhost)
-DOCKER_HOST    ?= $(or $(_env_docker),tcp://127.0.0.1:2375)
-DOCKER_NETWORK ?= $(or $(_env_network),model-runtime)
+SSH_HOST       ?= trainbox
+DOCKER_HOST    ?= $(or $(_env_docker),)
+DOCKER_NETWORK ?= model-runtime
 API_HOST       ?= $(or $(_env_api_host),0.0.0.0)
 API_PORT       ?= $(or $(_env_api_port),8000)
 
-# Export for child processes (docker SDK, Makefile targets)
+# Export DOCKER_HOST only when non-empty (remote Docker is opt-in via .env)
+ifeq ($(strip $(DOCKER_HOST)),)
+unexport DOCKER_HOST
+else
 export DOCKER_HOST
+endif
 
 # Derive SSH tunnel port from Docker host URL (tcp://127.0.0.1:2375 → 2375)
 DOCKER_PORT := $(or $(shell echo $(DOCKER_HOST) | sed -n 's/.*:\([0-9]\+\)$$/\1/p'),2375)
@@ -123,7 +125,7 @@ help:
 	@echo "Configuration (from $(ENV_FILE):)"
 	@echo "  SSH_HOST=$(SSH_HOST)        - Remote Docker host"
 	@echo "  DOCKER_PORT=$(DOCKER_PORT)  - Local port for SSH tunnel"
-	@echo "  DOCKER_HOST=$(DOCKER_HOST)  - Docker SDK endpoint"
+	@echo "  DOCKER_HOST=$(DOCKER_HOST)  - Docker SDK endpoint (empty = local Docker)"
 	@echo "  DOCKER_NETWORK=$(DOCKER_NETWORK) - Container network"
 	@echo "  API_HOST=$(API_HOST)        - FastAPI server bind address"
 	@echo "  API_PORT=$(API_PORT)        - FastAPI server port"

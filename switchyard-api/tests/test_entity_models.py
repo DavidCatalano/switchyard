@@ -6,7 +6,6 @@ Validates each entity model independently:
 - ModelConfig: store reference, model-family defaults
 - DeploymentConfig: references, overrides, placement, container overrides, extra_args
 - Config: top-level dict of all four entity sections
-- AppSettings: .env bootstrap fields
 """
 
 from __future__ import annotations
@@ -14,7 +13,6 @@ from __future__ import annotations
 import pytest
 
 from switchyard.config.models import (
-    AppSettings,
     Config,
     DeploymentConfig,
     HostConfig,
@@ -668,23 +666,3 @@ class TestBlankStringRejection:
                 host="h",
                 storage_overrides={"path": ""},
             )
-
-
-# ---------------------------------------------------------------------------
-# T1.7 — AppSettings tests
-# ---------------------------------------------------------------------------
-
-
-class TestAppSettings:
-    """AppSettings — .env bootstrap fields."""
-
-    def test_defaults(self) -> None:
-        """All AppSettings fields default to None."""
-        # AppSettings reads from .env / env vars; in isolated tests they're None
-        settings = AppSettings()
-        assert settings.config_path is None
-        assert settings.log_level is None
-        assert settings.api_host is None
-        assert settings.api_port is None
-        assert settings.active_host is None
-        assert settings.docker_host is None
