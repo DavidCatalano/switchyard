@@ -13,31 +13,48 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from switchyard.config.models import (
-    LegacyConfig as Config,
-)
-from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
-)
-from switchyard.config.models import (
-    VLLMRuntimeConfig,
-)
+from switchyard.config.models import Config
 from switchyard.core.orphan import OrphanDetector
 
 
-def _make_config(*models: tuple[str, str]) -> Config:
-    """Build a config with the given (model_name, backend) pairs."""
-    model_entries = {}
-    for name, backend in models:
-        model_entries[name] = ModelConfig(
-            backend=backend,
-            image=f"{backend}:latest",
-            runtime=VLLMRuntimeConfig(repo=f"mock/{name}"),
-        )
-    return Config(
-        global_config={"base_port": 8000, "log_level": "info"},
-        models=model_entries,
-    )
+def _make_config(*deployments: tuple[str, str, str]) -> Config:
+    """Build a Config with the given (deployment_name, model_name, backend) pairs.
+
+    Each deployment references a model/runtime/host so validation passes.
+    """
+    # Build minimal valid config with named entities
+    host_cfg = {
+        "test-host": {
+            "stores": {
+                "models": {
+                    "host_path": "/data/models",
+                    "container_path": "/models",
+                },
+            },
+        },
+    }
+    runtime_cfg = {
+        "vllm": {"backend": "vllm"},
+        "koboldcpp": {"backend": "koboldcpp"},
+    }
+    model_cfg: dict = {}
+    deployment_cfg: dict = {}
+    for dep_name, model_name, backend in deployments:
+        model_cfg[model_name] = {
+            "source": {"store": "models", "path": model_name},
+        }
+        deployment_cfg[dep_name] = {
+            "model": model_name,
+            "runtime": "vllm" if backend == "vllm" else "koboldcpp",
+            "host": "test-host",
+        }
+
+    return Config.model_validate({
+        "hosts": host_cfg,
+        "runtimes": runtime_cfg,
+        "models": model_cfg,
+        "deployments": deployment_cfg,
+    })
 
 
 def _make_container(
@@ -71,8 +88,8 @@ class TestOrphanDetector:
     @pytest.fixture
     def config(self) -> Config:
         return _make_config(
-            ("qwen-32b", "vllm"),
-            ("llama-70b", "vllm"),
+            ("qwen-32b-vllm-1", "qwen-32b", "vllm"),
+            ("llama-70b-vllm-1", "llama-70b", "vllm"),
         )
 
     def test_no_orphans_found(self, config: Config) -> None:
@@ -85,18 +102,24 @@ class TestOrphanDetector:
 
     def test_running_orphan_adopted(self, config: Config) -> None:
         mock_client = MagicMock()
-        container = _make_container("qwen-32b-vllm-1", state="running", host_port=8001)
+        container = _make_container(
+            "qwen-32b-vllm-1-vllm-1",
+            state="running",
+            host_port=8001,
+        )
         mock_client.containers.list.return_value = [container]
         detector = OrphanDetector(mock_client, config)
         results = detector.scan()
         assert len(results.adopted) == 1
-        assert results.adopted[0].model_name == "qwen-32b"
+        assert results.adopted[0].model_name == "qwen-32b-vllm-1"
         assert results.adopted[0].port == 8001
         assert results.adopted[0].status == "running"
 
     def test_crashed_orphan_removed(self, config: Config) -> None:
         mock_client = MagicMock()
-        container = _make_container("qwen-32b-vllm-1", state="exited")
+        container = _make_container(
+            "qwen-32b-vllm-1-vllm-1", state="exited",
+        )
         mock_client.containers.list.return_value = [container]
         detector = OrphanDetector(mock_client, config)
         results = detector.scan()
@@ -105,7 +128,7 @@ class TestOrphanDetector:
         container.remove.assert_called_once_with(force=True)
 
     def test_unknown_container_ignored(self, config: Config) -> None:
-        """Containers not matching configured models are ignored."""
+        """Containers not matching configured deployments are ignored."""
         mock_client = MagicMock()
         container = _make_container("random-container", state="running")
         mock_client.containers.list.return_value = [container]
@@ -116,36 +139,45 @@ class TestOrphanDetector:
 
     def test_multiple_orphans_mixed(self, config: Config) -> None:
         mock_client = MagicMock()
-        running = _make_container("qwen-32b-vllm-1", state="running", host_port=8001)
-        crashed = _make_container("llama-70b-vllm-1", state="dead")
+        running = _make_container(
+            "qwen-32b-vllm-1-vllm-1",
+            state="running",
+            host_port=8001,
+        )
+        crashed = _make_container(
+            "llama-70b-vllm-1-vllm-1",
+            state="dead",
+        )
         mock_client.containers.list.return_value = [running, crashed]
         detector = OrphanDetector(mock_client, config)
         results = detector.scan()
         assert len(results.adopted) == 1
-        assert results.adopted[0].model_name == "qwen-32b"
+        assert results.adopted[0].model_name == "qwen-32b-vllm-1"
         assert len(results.removed) == 1
 
-    def test_name_pattern_parsing(self, config: Config) -> None:
+    def test_name_pattern_parsing(self) -> None:
         """Container names like model-backend-N are parsed correctly."""
+        config = _make_config(
+            ("my-model-koboldcpp-3", "my-model", "koboldcpp"),
+        )
         mock_client = MagicMock()
         container = _make_container(
-            "my-model-koboldcpp-3",
+            "my-model-koboldcpp-3-koboldcpp-3",
             state="running",
             host_port=9001,
         )
-        config_with_kobold = _make_config(("my-model", "koboldcpp"))
         mock_client.containers.list.return_value = [container]
-        detector = OrphanDetector(mock_client, config_with_kobold)
+        detector = OrphanDetector(mock_client, config)
         results = detector.scan()
         assert len(results.adopted) == 1
-        assert results.adopted[0].model_name == "my-model"
+        assert results.adopted[0].model_name == "my-model-koboldcpp-3"
         assert results.adopted[0].backend == "koboldcpp"
 
     def test_orphan_port_8000_preferred(self, config: Config) -> None:
         """Port extraction prefers 8000/tcp (vLLM default internal port)."""
         mock_client = MagicMock()
         container = _make_container(
-            "qwen-32b-vllm-1",
+            "qwen-32b-vllm-1-vllm-1",
             state="running",
             host_port=8010,
             internal_port=8000,
@@ -160,7 +192,7 @@ class TestOrphanDetector:
         """Port extraction falls back to 80/tcp if 8000/tcp not present."""
         mock_client = MagicMock()
         container = _make_container(
-            "qwen-32b-vllm-1",
+            "qwen-32b-vllm-1-vllm-1",
             state="running",
             host_port=8020,
             internal_port=80,

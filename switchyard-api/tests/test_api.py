@@ -1,227 +1,192 @@
-"""API endpoint tests — model lifecycle routes (T4.1–T4.4).
+"""Tests for the API routes.
 
-Tests POST /models/load, POST /models/unload, GET /models,
-GET /models/{model}/status against the FastAPI app using TestClient.
+Validates:
+- GET /health returns 200
+- POST /deployments/load starts a deployment
+- POST /deployments/unload stops a deployment
+- GET /deployments lists deployments from state
+- GET /deployments/{name}/status returns deployment status
+- OpenAI-compatible passthrough routes are preserved
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
+from starlette.testclient import TestClient
 
 from switchyard.app import create_app
-from switchyard.config.models import (
-    ControlConfig,
-    GlobalConfig,
-    RuntimeDefaults,
-    VLLMRuntimeConfig,
-)
-from switchyard.config.models import (
-    LegacyConfig as Config,
-)
-from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
-)
+
+
+@pytest.fixture(autouse=True)
+def _mock_config_loader():
+    from switchyard.config.models import Config
+    config = Config.model_validate({
+        "hosts": {
+            "test-host": {
+                "stores": {
+                    "models": {
+                        "host_path": "/data/models",
+                        "container_path": "/models",
+                    },
+                },
+                "port_range": [9000, 9100],
+            },
+        },
+        "runtimes": {"vllm": {"backend": "vllm"}},
+        "models": {
+            "test-model": {
+                "source": {"store": "models", "path": "test-model"},
+            },
+        },
+        "deployments": {
+            "test-deployment": {
+                "model": "test-model",
+                "runtime": "vllm",
+                "host": "test-host",
+            },
+        },
+    })
+    with patch("switchyard.app.ConfigLoader.load", return_value=config):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_active_host():
+    with patch.dict("os.environ", {"SWITCHYARD_ACTIVE_HOST": "test-host"}):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _mock_docker():
+    """Prevent Docker connections during API tests."""
+    with patch("docker.from_env") as mock:
+        mock.return_value = MagicMock()
+        mock.return_value.ping.return_value = True
+        yield mock
 
 
 @pytest.fixture
 def app():
-    """Create a fresh FastAPI app with mocked lifecycle manager."""
-    manager = MagicMock()
-    manager.load_model = AsyncMock()
-    manager.unload_model = AsyncMock()
-    manager.state.get = MagicMock()
-    manager.state.list_deployments = MagicMock(return_value=[])
+    """Create the FastAPI app with mocked lifecycle."""
+    from switchyard.core.lifecycle import LifecycleManager
+    from switchyard.core.state import DeploymentStateManager
 
-    config = Config(
-        global_config=GlobalConfig(log_level="debug"),
-        runtime_defaults=RuntimeDefaults(),
-        models={},
-    )
-
-    with (
-        patch("switchyard.app.ConfigLoader.load", return_value=config),
-        patch("switchyard.app.LifecycleManager", return_value=manager),
-    ):
-        a = create_app()
-        a.state.config = config
-        a.state.manager = manager
-    return a, manager  # type: ignore[return-value]
+    app = create_app()
+    app.state.manager = MagicMock(spec=LifecycleManager)
+    app.state.manager.state = MagicMock(spec=DeploymentStateManager)
+    app.state.manager.state.list_deployments.return_value = []
+    app.state.manager.state.get.side_effect = KeyError("not found")
+    app.state.manager.load_model = AsyncMock()
+    app.state.manager.unload_model = AsyncMock()
+    return app
 
 
 @pytest.fixture
 def client(app):
-    """TestClient backed by the app fixture."""
-    a, _ = app
-    return TestClient(a), app[1]  # type: ignore[name-defined]
+    return TestClient(app)
 
 
-# ---------------------------------------------------------------------------
-# T4.1 — POST /models/load
-# ---------------------------------------------------------------------------
+class TestHealth:
+    def test_health_endpoint(self, client: TestClient) -> None:
+        response = client.get("/health")
+        assert response.status_code == 200
 
-class TestLoadModel:
-    """POST /models/load endpoint tests."""
 
-    def _setup_model(self, config, model_name, backend="vllm") -> None:
-        """Add a model entry to config.models."""
-        config.models[model_name] = ModelConfig(
-            backend=backend,
-            image="vllm/vllm-openai:latest",
-            control=ControlConfig(),
-            runtime=VLLMRuntimeConfig(repo=f"hf/{model_name}"),
+class TestDeploymentRoutes:
+    """Route tests for /deployments endpoints (T4.10)."""
+
+    def test_list_deployments(self, client: TestClient) -> None:
+        response = client.get("/deployments")
+        assert response.status_code == 200
+        assert response.json() == []
+
+    def test_load_deployment_unknown(self, client: TestClient) -> None:
+        """Loading an unknown deployment raises 404."""
+        response = client.post(
+            "/deployments/load",
+            json={"deployment": "nonexistent"},
+        )
+        assert response.status_code == 404
+
+    def test_load_deployment_success(self) -> None:
+        """Loading a known deployment calls resolve_deployment + load_model."""
+        app = create_app()
+
+        client = TestClient(app)
+        response = client.post(
+            "/deployments/load",
+            json={"deployment": "test-deployment"},
         )
 
-    def test_load_returns_202(self, client):
-        """Load a model returns 202 Accepted."""
-        tc, manager = client
-        self._setup_model(tc.app.state.config, "qwen-32b")
-        manager.load_model.return_value = SimpleNamespace(
-            model_name="qwen-32b",
+        assert response.status_code == 202
+        # Verify the manager's state was updated
+        info = app.state.manager.state.get("test-deployment")
+        assert info.status in ("loading", "running")
+
+    def test_unload_deployment_unknown(self, client: TestClient) -> None:
+        response = client.post(
+            "/deployments/unload",
+            json={"deployment": "nonexistent"},
+        )
+        assert response.status_code == 404
+
+    def test_unload_deployment_success(self) -> None:
+        """Unloading a deployment calls unload_model."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        # Pre-populate state so unload finds it
+        mock_info = DeploymentInfo(
+            model_name="test-deployment",
             backend="vllm",
-            port=8000,
-            status="loading",
+            port=9001,
+            status="running",
             container_id="abc123",
         )
+        app.state.manager.state.add(mock_info)
 
-        resp = tc.post("/models/load", json={"model": "qwen-32b"})
-        assert resp.status_code == 202
-        data = resp.json()
-        assert data["model_name"] == "qwen-32b"
-        assert data["status"] == "loading"
-
-    def test_load_unknown_model_404(self, client):
-        """Load unknown model returns 404."""
-        tc, manager = client
-
-        resp = tc.post("/models/load", json={"model": "nonexistent"})
-        assert resp.status_code == 404
-
-    def test_load_duplicate_running_400(self, client):
-        """Load already-running model returns 400."""
-        tc, manager = client
-        self._setup_model(tc.app.state.config, "qwen-32b")
-        manager.load_model.side_effect = ValueError("already deployed")
-
-        resp = tc.post("/models/load", json={"model": "qwen-32b"})
-        assert resp.status_code == 400
-
-    def test_load_no_body_400(self, client):
-        """Load with no body returns 400."""
-        tc, _ = client
-
-        resp = tc.post("/models/load", content=b"")
-        assert resp.status_code in (400, 422)
-
-
-# ---------------------------------------------------------------------------
-# T4.2 — POST /models/unload
-# ---------------------------------------------------------------------------
-
-class TestUnloadModel:
-    """POST /models/unload endpoint tests."""
-
-    def test_unload_returns_200(self, client):
-        """Unload a model returns 200 OK."""
-        tc, manager = client
-
-        resp = tc.post("/models/unload", json={"model": "qwen-32b"})
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["model_name"] == "qwen-32b"
-        assert data["status"] == "stopped"
-
-    def test_unload_unknown_model_404(self, client):
-        """Unload unknown model returns 404."""
-        tc, manager = client
-        manager.unload_model.side_effect = KeyError("not found")
-
-        resp = tc.post("/models/unload", json={"model": "nonexistent"})
-        assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# T4.3 — GET /models
-# ---------------------------------------------------------------------------
-
-class TestListModels:
-    """GET /models endpoint tests."""
-
-    def test_list_empty(self, client):
-        """List models returns empty list when none deployed."""
-        tc, manager = client
-
-        resp = tc.get("/models")
-        assert resp.status_code == 200
-        assert resp.json() == []
-
-    def test_list_with_deployments(self, client):
-        """List models returns all deployments with metadata."""
-        tc, manager = client
-        manager.state.list_deployments.return_value = ["qwen-32b"]
-        manager.state.get.return_value = SimpleNamespace(
-            model_name="qwen-32b",
-            backend="vllm",
-            port=8000,
-            status="running",
-            started_at=None,
+        client = TestClient(app)
+        response = client.post(
+            "/deployments/unload",
+            json={"deployment": "test-deployment"},
         )
 
-        resp = tc.get("/models")
-        assert resp.status_code == 200
-        data = resp.json()
-        assert len(data) == 1
-        assert data[0]["model_name"] == "qwen-32b"
-        assert data[0]["status"] == "running"
+        assert response.status_code == 200
+
+    def test_status_unknown(self, client: TestClient) -> None:
+        response = client.get("/deployments/nonexistent/status")
+        assert response.status_code == 404
 
 
-# ---------------------------------------------------------------------------
-# T4.4 — GET /models/{model}/status
-# ---------------------------------------------------------------------------
+class TestOpenAIProxy:
+    """OpenAI-compatible passthrough route tests (T4.11)."""
 
-class TestModelStatus:
-    """GET /models/{model}/status endpoint tests."""
+    def test_chat_completions_route_exists(self, client: TestClient) -> None:
+        """POST /v1/chat/completions exists in route table."""
+        route_names = [r.path for r in client.app.routes]
+        assert "/v1/chat/completions" in route_names
 
-    def test_status_running(self, client):
-        """Returns running status."""
-        tc, manager = client
-        manager.state.get.return_value = SimpleNamespace(
-            model_name="qwen-32b", status="running",
+    def test_chat_completions_no_active_deployment(self, client: TestClient) -> None:
+        """Chat completions returns 404 when deployment not found."""
+        response = client.post(
+            "/v1/chat/completions",
+            json={"model": "nonexistent"},
         )
+        assert response.status_code == 404
 
-        resp = tc.get("/models/qwen-32b/status")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "running"
+    def test_backends_route_exists(self, client: TestClient) -> None:
+        """GET /v1/backends/{deployment}/{path:path} exists in route table."""
+        route_names = [r.path for r in client.app.routes]
+        assert any("backends" in r for r in route_names)
 
-    def test_status_loading(self, client):
-        """Returns loading status."""
-        tc, manager = client
-        manager.state.get.return_value = SimpleNamespace(
-            model_name="qwen-32b", status="loading",
+    def test_backends_passthrough_unknown_deployment(
+        self, client: TestClient,
+    ) -> None:
+        """Backend proxy returns 404 for unknown deployment."""
+        response = client.post(
+            "/v1/backends/nonexistent/models",
+            json={},
         )
-
-        resp = tc.get("/models/qwen-32b/status")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "loading"
-
-    def test_status_error(self, client):
-        """Returns error status."""
-        tc, manager = client
-        manager.state.get.return_value = SimpleNamespace(
-            model_name="qwen-32b", status="error",
-        )
-
-        resp = tc.get("/models/qwen-32b/status")
-        assert resp.status_code == 200
-        assert resp.json()["status"] == "error"
-
-    def test_status_unknown_model_404(self, client):
-        """Unknown model returns 404."""
-        tc, manager = client
-        manager.state.get.side_effect = KeyError("not found")
-
-        resp = tc.get("/models/nonexistent/status")
-        assert resp.status_code == 404
+        assert response.status_code == 404

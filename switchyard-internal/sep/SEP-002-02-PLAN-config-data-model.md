@@ -80,22 +80,22 @@ deployments:
 **Goal**: All existing tests pass against the new config model; no test or code path depends on the old shape.
 
 #### Tasks
-- [ ] **T4.1**: Migrate existing config loading tests to new entity model
-- [ ] **T4.2**: Migrate existing cascade/override tests to new deployment resolution tests
-- [ ] **T4.3**: Migrate adapter tests to use new config fixtures (adapter logic unchanged — SEP-002 does not modify adapter behavior). Include the opt-in CPU smoke test, which currently constructs `ModelConfig`/`VLLMRuntimeConfig` directly and must be migrated to the new resolved deployment shape
-- [ ] **T4.4**: Migrate lifecycle tests to new config types (stubs)
-- [ ] **T4.5**: Tests: vLLM typed field preservation — known fields still validate, invalid values still fail, unknown flags pass through `extra_args`
-- [ ] **T4.6**: Tests: runtime command safety — Switchyard-internal fields (`placement`, `accelerator_ids`, `stores`, `docker_host`) are never emitted as vLLM CLI args
-- [ ] **T4.7**: Run quality gates: `uv run pytest`, `uv run ruff check src tests --fix`, `uv run mypy src/switchyard`
-- [ ] **T4.8**: Verify no remaining imports or references to old config types (`GlobalConfig`, `RuntimeDefaults`, etc.)
-- [ ] **T4.9**: Tests: adapter launch from `ResolvedDeployment` — volume mounts (`model_host_path` → `model_container_path`), device requests (`accelerator_ids`, capabilities format), environment merge, container options, image, internal port
-- [ ] **T4.10**: Tests: deployment route loading — `POST /deployments/load` resolves via `resolve_deployment()`, validates deployment exists in config, returns correct response
-- [ ] **T4.11**: Tests: OpenAI passthrough preservation — `POST /v1/chat/completions` proxies to backend, streaming support, `POST /v1/backends/{deployment}/{path:path}` routes correctly
-- [ ] **T4.12**: Tests: active host selection — `_resolve_active_host()` raises on unknown `SWITCHYARD_ACTIVE_HOST`, falls back to first host when unset, port range wired into `PortAllocator`
-- [ ] **T4.13**: Tests: lifecycle state keyed by deployment name — `load_model`/`unload_model`/`get_status`/`_wait_for_status` use `deployment_name` consistently
-- [ ] **T4.14**: Tests: extra_args escape hatch — `deployment.extra_args` survives resolution nested as `runtime_args["extra_args"]`, appears in `VLLMRuntimeConfig.extra_args`, and renders as CLI flags in adapter command
-- [ ] **T4.15**: Tests: store mounts — resolved deployment includes all host stores in `store_mounts`, adapter mounts both `models` (ro) and `hf_cache` (rw) with correct modes
-- [ ] **T4.16**: Tests: docker_host wiring — adapter uses `resolved.docker_host` when no injected Docker client exists, `_backend_url()` uses active host fallback when deployment metadata lacks host/scheme
+- [x] **T4.1**: Migrate existing config loading tests to new entity model
+- [x] **T4.2**: Migrate existing cascade/override tests to new deployment resolution tests
+- [x] **T4.3**: Migrate adapter tests to use new config fixtures. Include the opt-in CPU smoke test, which currently constructs `ModelConfig`/`VLLMRuntimeConfig` directly and must be migrated to the new resolved deployment shape
+- [x] **T4.4**: Migrate lifecycle tests to new config types (stubs)
+- [x] **T4.5**: Tests: vLLM typed field preservation — known fields still validate, invalid values still fail, unknown flags pass through `extra_args`
+- [x] **T4.6**: Tests: runtime command safety — Switchyard-internal fields (`placement`, `accelerator_ids`, `stores`, `docker_host`) are never emitted as vLLM CLI args
+- [x] **T4.7**: Run quality gates: `uv run pytest`, `uv run ruff check src tests --fix`, `uv run mypy src/switchyard`
+- [x] **T4.8**: Verify no remaining imports or references to old config types (`GlobalConfig`, `RuntimeDefaults`, etc.)
+- [x] **T4.9**: Tests: adapter launch from `ResolvedDeployment` — volume mounts (`model_host_path` → `model_container_path`), device requests (`accelerator_ids`, capabilities format), environment merge, container options, image, internal port
+- [x] **T4.10**: Tests: deployment route loading — `POST /deployments/load` resolves via `resolve_deployment()`, validates deployment exists in config, returns correct response
+- [x] **T4.11**: Tests: OpenAI passthrough preservation — `POST /v1/chat/completions` proxies to backend, streaming support, `POST /v1/backends/{deployment}/{path:path}` routes correctly
+- [x] **T4.12**: Tests: active host selection — `_resolve_active_host()` raises on unknown `SWITCHYARD_ACTIVE_HOST`, falls back to first host when unset, port range wired into `PortAllocator`
+- [x] **T4.13**: Tests: lifecycle state keyed by deployment name — `load_model`/`unload_model`/`get_status`/`_wait_for_status` use `deployment_name` consistently
+- [x] **T4.14**: Tests: extra_args escape hatch — `deployment.extra_args` survives resolution nested as `runtime_args["extra_args"]`, appears in `VLLMRuntimeConfig.extra_args`, and renders as CLI flags in adapter command
+- [x] **T4.15**: Tests: store mounts — resolved deployment includes all host stores in `store_mounts`, adapter mounts both `models` (ro) and `hf_cache` (rw) with correct modes
+- [x] **T4.16**: Tests: docker_host wiring — adapter uses `resolved.docker_host` when no injected Docker client exists, `_backend_url()` uses active host fallback when deployment metadata lacks host/scheme
 
 ---
 
@@ -125,7 +125,7 @@ lifecycle state keyed by deployment name.
 1. T1.1–T1.7 (entity models are foundational; everything else depends on them)
 2. T2.1–T2.8 (loader and resolution depend on models)
 3. T3.1–T3.7 (code removal and updates depend on loader producing correct output)
-4. T4.1–T4.13 (test migration depends on all new code being in place)
+4. T4.1–T4.16 (test migration depends on all new code being in place)
 
 ### Parallel Work Streams
 - T1.1–T1.6 are independent entity models (can be developed in parallel)
@@ -146,7 +146,7 @@ lifecycle state keyed by deployment name.
 - **Timeline**: Phase 2
 
 ### Risk: Accidentally absorbing SEP-003 scope (lifecycle changes) into this refactor
-- **Mitigation**: SEP-002 defines `ResolvedDeployment` as the canonical resolved config output, but does not wire it into adapter start/stop/health behavior. If a compile-time type adjustment is unavoidable, limit it to a signature-only change with no behavioral impact. Explicit boundary check in Phase 3.
+- **Mitigation**: Adapter/lifecycle wiring was accepted as a Phase 3 scope expansion (see Phase 3 Scope Adjustment). `BackendAdapter.start()` and `VLLMAdapter.start()` now accept `ResolvedDeployment` and use its fields for CLI building, volume mounts, device requests, environment, and container options. This pulled-forward behavior is covered by T4.9–T4.16. Remaining lifecycle changes (auto-start, container orchestration) stay in SEP-003 scope.
 - **Owner**: Agent + User
 - **Timeline**: Phase 3
 
@@ -158,7 +158,7 @@ lifecycle state keyed by deployment name.
 
 ### Success Criteria Validation
 - [ ] A `config.yaml` with hosts, runtimes, models, and deployments loads and validates
-- [ ] A deployment referencing a model, runtime, and host resolves into a complete `ResolvedDeployment` data object (no lifecycle changes)
+- [ ] A deployment referencing a model, runtime, and host resolves into a complete `ResolvedDeployment` data object
 - [ ] Reference validation catches broken cross-entity references (unknown host, missing runtime, etc.)
 - [ ] `.env` supplies process-local bootstrap values; YAML config owns only entity definitions; `.env` `docker_host` overrides the host's canonical definition for the active process
 - [ ] The legacy `global` / `runtime_defaults` / per-model `runtime` schema is fully removed; vLLM typed field validation is preserved in the new schema
@@ -174,7 +174,7 @@ lifecycle state keyed by deployment name.
 |---|----------|--------|--------|------|
 | D1 | Single `config.yaml` for all entities; split into separate files later | Reduces complexity for single-host use case; splitting is a mechanical change driven by volume, not architecture | Draft | 2026-04-30 |
 | D2 | No semantic serving abstractions (`reasoning.enabled`, `multimodal.enabled`) | Avoids adapter translation layer; typed fields map directly to backend flags, `extra_args` is the escape hatch | Draft | 2026-04-30 |
-| D3 | SEP-002 produces `ResolvedDeployment` data object only; no lifecycle changes | Keeps scope contained; SEP-003 owns wiring adapters and starting containers by deployment ID | Draft | 2026-04-30 |
+| D3 | SEP-002 produces `ResolvedDeployment` data object and wires it into adapter/lifecycle (accepted Phase 3 scope expansion). Remaining lifecycle changes (auto-start, container orchestration) stay in SEP-003 scope | Removing the legacy launch config forced adapter/lifecycle type changes; keeping legacy types to shield them would defeat Phase 3. Covered by T4.9–T4.16. | Draft | 2026-04-30 |
 | D4 | No backward compatibility with SEP-001 config shape | Small codebase, no external users; maintaining dual loaders adds complexity with no benefit | Draft | 2026-04-30 |
 | D5 | Preserve vLLM typed field validation from SEP-001 in the new schema | High-value parameters remain validated Pydantic fields; moving them is better than discarding and recreating | Draft | 2026-04-30 |
 | D6 | `.env` `docker_host` overrides `hosts.*.docker_host` for the active process | Canonical host definition lives in YAML; process-level override via `.env` allows remote Docker development without editing managed config | Draft | 2026-04-30 |

@@ -5,22 +5,49 @@ Validates:
   container_id, started_at)
 - DeploymentInfo validates status values
 - BackendAdapter is abstract and enforces method implementation
-- Concrete implementations can satisfy the contract
+- Concrete implementations can satisfy the contract with ResolvedDeployment
 """
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
-from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
-)
-from switchyard.config.models import (
-    VLLMRuntimeConfig,
-)
+from switchyard.config.models import ResolvedDeployment
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
+
+
+def _make_resolved(
+    overrides: dict[str, Any] | None = None,
+) -> ResolvedDeployment:
+    """Create a minimal ResolvedDeployment for tests."""
+    defaults: dict[str, Any] = {
+        "deployment_name": "test-deployment",
+        "model_name": "test-model",
+        "runtime_name": "vllm",
+        "backend": "vllm",
+        "host_name": "test-host",
+        "backend_host": "localhost",
+        "backend_scheme": "http",
+        "port_range": [8000, 9000],
+        "image": "vllm/vllm-openai:latest",
+        "internal_port": 8000,
+        "model_host_path": "/data/models/test",
+        "model_container_path": "/models/test",
+        "accelerator_ids": [],
+        "docker_host": None,
+        "docker_network": "model-runtime",
+        "runtime_args": {"model": "/models/test"},
+        "container_environment": {},
+        "container_options": {},
+        "store_mounts": {},
+        "model_defaults": None,
+    }
+    if overrides:
+        defaults.update(overrides)
+    return ResolvedDeployment(**defaults)
 
 
 class TestDeploymentInfo:
@@ -119,7 +146,9 @@ class TestBackendAdapter:
         """Subclass that doesn't implement all methods cannot be instantiated."""
 
         class PartialAdapter(BackendAdapter):
-            def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
                 return DeploymentInfo(
                     model_name="m",
                     backend="b",
@@ -135,7 +164,9 @@ class TestBackendAdapter:
         """A class implementing all abstract methods can be instantiated."""
 
         class MockAdapter(BackendAdapter):
-            def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
                 return DeploymentInfo(
                     model_name="test",
                     backend="mock",
@@ -158,17 +189,14 @@ class TestBackendAdapter:
 
     def test_complete_implementation_methods(self) -> None:
         """Verify a concrete adapter's methods return expected types."""
-        model_config = ModelConfig(
-            backend="mock",
-            image="mock:latest",
-            runtime=VLLMRuntimeConfig(repo="mock/model"),
-        )
 
         class MockAdapter(BackendAdapter):
-            def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
                 return DeploymentInfo(
-                    model_name="test",
-                    backend="mock",
+                    model_name=resolved.deployment_name,
+                    backend=resolved.backend,
                     port=port,
                     status="running",
                     container_id="mock-123",
@@ -186,7 +214,8 @@ class TestBackendAdapter:
         adapter = MockAdapter()
 
         # start returns DeploymentInfo
-        info = adapter.start(model_config, 8001)
+        resolved = _make_resolved()
+        info = adapter.start(resolved, 8001)
         assert isinstance(info, DeploymentInfo)
         assert info.port == 8001
 

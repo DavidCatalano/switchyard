@@ -1,4 +1,4 @@
-"""Tests for the minimal FastAPI application (T1.8)."""
+"""Tests for the minimal FastAPI application."""
 
 from __future__ import annotations
 
@@ -10,23 +10,40 @@ from httpx import ASGITransport, AsyncClient
 
 
 def _make_config(path: Path) -> None:
-    """Write a minimal valid config file."""
+    """Write a minimal valid entity-based config file."""
     import yaml
 
     path.write_text(
         yaml.dump({
-            "global": {
-                "version": "0.1.0",
-                "env": "development",
-                "log_level": "debug",
-                "host": "127.0.0.1",
-                "base_port": 8000,
+            "hosts": {
+                "test-host": {
+                    "stores": {
+                        "models": {
+                            "host_path": "/data/models",
+                            "container_path": "/models",
+                        },
+                    },
+                },
+            },
+            "runtimes": {
+                "vllm": {
+                    "backend": "vllm",
+                    "image": "vllm/vllm-openai:latest",
+                },
             },
             "models": {
                 "test-model": {
-                    "backend": "vllm",
-                    "image": "vllm/vllm-openai:latest",
-                    "runtime": {"repo": "test/repo"},
+                    "source": {
+                        "store": "models",
+                        "path": "test-model",
+                    },
+                },
+            },
+            "deployments": {
+                "test-deployment": {
+                    "model": "test-model",
+                    "runtime": "vllm",
+                    "host": "test-host",
                 },
             },
         })
@@ -43,6 +60,7 @@ def app(tmp_path) -> FastAPI:
     config_file = tmp_path / "config.yaml"
     _make_config(config_file)
     os.environ["SWITCHYARD_CONFIG_PATH"] = str(config_file)
+    os.environ.setdefault("SWITCHYARD_ACTIVE_HOST", "test-host")
 
     return create_app()
 
@@ -97,9 +115,8 @@ class TestAppCreation:
         config_file = tmp_path / "config.yaml"
         _make_config(config_file)
         os.environ["SWITCHYARD_CONFIG_PATH"] = str(config_file)
+        os.environ.setdefault("SWITCHYARD_ACTIVE_HOST", "test-host")
 
-        app = create_app(
-            config_overrides={"global_config": {"log_level": "warning"}},
-        )
+        app = create_app()
         # Verify middleware was added (app has user_middleware)
         assert len(app.user_middleware) > 0

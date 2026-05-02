@@ -1,0 +1,29 @@
+hosts:
+  test-host:
+    backend_host: "localhost"
+    backend_scheme: "http"
+    port_range: [9000, 9100]
+    stores:
+      models:
+        host_path: "/data/models"
+        container_path: "/models"
+
+runtimes:
+  vllm:
+    backend: "vllm"
+    image: "vllm/vllm-openai:latest"
+    internal_port: 8000
+    container_environment:
+      VLLM_WORKER_MULTIPROC_METHOD: "spawn"
+
+models:
+  test-model:
+    source:
+      store: "models"
+      path: "test-model"
+
+deployments:
+  test-deployment:
+    model: "test-model"
+    runtime: "vllm"
+    host: "test-host"

@@ -12,11 +12,40 @@ from __future__ import annotations
 
 import pytest
 
-from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
-)
+from switchyard.config.models import ResolvedDeployment
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.registry import AdapterRegistry
+
+
+def _make_resolved(
+    overrides: dict | None = None,
+) -> ResolvedDeployment:
+    """Create a minimal ResolvedDeployment for tests."""
+    defaults: dict = {
+        "deployment_name": "test-deployment",
+        "model_name": "test-model",
+        "runtime_name": "vllm",
+        "backend": "vllm",
+        "host_name": "test-host",
+        "backend_host": "localhost",
+        "backend_scheme": "http",
+        "port_range": [8000, 9000],
+        "image": "vllm/vllm-openai:latest",
+        "internal_port": 8000,
+        "model_host_path": "/data/models/test",
+        "model_container_path": "/models/test",
+        "accelerator_ids": [],
+        "docker_host": None,
+        "docker_network": "model-runtime",
+        "runtime_args": {"model": "/models/test"},
+        "container_environment": {},
+        "container_options": {},
+        "store_mounts": {},
+        "model_defaults": None,
+    }
+    if overrides:
+        defaults.update(overrides)
+    return ResolvedDeployment(**defaults)
 
 
 class _TestAdapter(BackendAdapter):
@@ -26,11 +55,11 @@ class _TestAdapter(BackendAdapter):
         self.tag = tag
         self._started: list[str] = []
 
-    def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
-        self._started.append(model_config.backend)
+    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
+        self._started.append(resolved.backend)
         return DeploymentInfo(
-            model_name="test",
-            backend=model_config.backend,
+            model_name=resolved.deployment_name,
+            backend=resolved.backend,
             port=port,
             status="running",
             container_id=f"test-{self.tag}",
@@ -49,10 +78,10 @@ class _TestAdapter(BackendAdapter):
 class _AnotherAdapter(BackendAdapter):
     """Second adapter class for testing multiple registrations."""
 
-    def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
         return DeploymentInfo(
-            model_name="test",
-            backend=model_config.backend,
+            model_name=resolved.deployment_name,
+            backend=resolved.backend,
             port=port,
             status="running",
             container_id="another-123",
@@ -101,10 +130,12 @@ class TestAdapterRegistry:
         """Factory works with no extra kwargs."""
 
         class SimpleAdapter(BackendAdapter):
-            def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
                 return DeploymentInfo(
-                    model_name="m",
-                    backend="b",
+                    model_name=resolved.deployment_name,
+                    backend=resolved.backend,
                     port=port,
                     status="running",
                     container_id="c",
