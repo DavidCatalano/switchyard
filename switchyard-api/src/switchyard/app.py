@@ -317,13 +317,19 @@ def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
 
 def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     """Stream SSE response from backend to client transparently."""
-    try:
+
+    def _generate() -> Any:
         with httpx.Client(timeout=10.0) as client:
-            response = client.post(url, json=body)
+            try:
+                with client.stream("POST", url, json=body) as response:
+                    yield from response.iter_bytes()
+            except httpx.TimeoutException:
+                # Re-raise to let caller handle error status
+                raise
+            except httpx.ConnectError:
+                raise
 
-        def _generate() -> Any:
-            yield from response.iter_bytes()
-
+    try:
         return StreamingResponse(
             _generate(),
             media_type="text/event-stream",

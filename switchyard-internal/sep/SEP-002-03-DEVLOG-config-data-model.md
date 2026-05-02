@@ -42,6 +42,15 @@
     upstream timeout (504) and backend passthrough error tests
   - pyproject.toml — registered pytest.mark.integration marker
   218 tests pass, 3 skipped, ruff/mypy clean.
+- 2026-05-02 — Second round of post-review findings fixes:
+  - app.py — fixed _streaming_proxy() to use client.stream() inside generator
+    context, so upstream response streams transparently instead of buffering
+  - test_proxy.py — assert forwarded URL/body in non-streaming proxy, streaming
+    proxy, and backend passthrough tests
+  - test_vllm_adapter.py — added test_start_uses_docker_host_from_resolved()
+    with no injected client, asserting DockerClient called with
+    base_url=resolved.docker_host (T4.16 coverage complete)
+  219 tests pass, 3 skipped, ruff/mypy clean.
 
 ---
 

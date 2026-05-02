@@ -207,3 +207,53 @@ class TestVLLMAdapter:
         assert "0.0.0.0" in command
         assert "--port" in command
         assert "8000" in command
+
+    def test_start_uses_docker_host_from_resolved(self, adapter: VLLMAdapter) -> None:
+        """start() creates Docker client with resolved.docker_host when not injected.
+
+        Covers T4.16: docker_host wiring — no injected client, so adapter
+        must honour resolved.docker_host via _set_docker_client().
+        """
+        resolved = ResolvedDeployment(
+            deployment_name="host-test",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=[],
+            docker_host="tcp://remote-host:2375",
+            docker_network="",
+            runtime_args={"model": "/models/test"},
+            container_environment={},
+            container_options={},
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "def456"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+
+        # No injected client — adapter must create one from resolved.docker_host
+        assert adapter._docker_client is None
+        with patch(
+            "switchyard.adapters.vllm.docker.DockerClient",
+            return_value=mock_client,
+        ) as mock_docker_client:
+            info = adapter.start(resolved, 9002)
+
+        assert info.container_id == "def456"
+
+        # Assert DockerClient was called with base_url=resolved.docker_host
+        mock_docker_client.assert_called_once_with(
+            base_url="tcp://remote-host:2375"
+        )

@@ -138,6 +138,16 @@ class TestChatCompletionsProxy:
                     "messages": [{"role": "user", "content": "Hi"}],
                 },
             )
+
+        # Assert forwarded URL and body
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "http://127.0.0.1:9001/v1/chat/completions"
+        assert call_args.kwargs["json"] == {
+            "model": "test-deployment",
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+
         assert resp.status_code == 200
         assert resp.json()["choices"][0]["message"]["content"] == "Hello"
 
@@ -149,8 +159,10 @@ class TestChatCompletionsProxy:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.iter_bytes.return_value = [sse_data]
+        mock_response.__enter__ = MagicMock(return_value=mock_response)
+        mock_response.__exit__ = MagicMock(return_value=False)
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.stream.return_value = mock_response
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
 
@@ -178,6 +190,18 @@ class TestChatCompletionsProxy:
                     "messages": [{"role": "user", "content": "Hi"}],
                 },
             )
+
+        # Assert stream() called with correct URL and body
+        mock_client.stream.assert_called_once()
+        call_args = mock_client.stream.call_args
+        assert call_args.args[0] == "POST"
+        assert call_args.args[1] == "http://127.0.0.1:9001/v1/chat/completions"
+        assert call_args.kwargs["json"] == {
+            "model": "test-deployment",
+            "stream": True,
+            "messages": [{"role": "user", "content": "Hi"}],
+        }
+
         assert resp.status_code == 200
         assert b"choices" in resp.content
 
@@ -274,5 +298,12 @@ class TestBackendsPassthrough:
                 "/v1/backends/test-deployment/embeddings",
                 json={"input": "hello"},
             )
+
+        # Assert forwarded URL and body
+        mock_client.post.assert_called_once()
+        call_args = mock_client.post.call_args
+        assert call_args.args[0] == "http://127.0.0.1:9001/v1/embeddings"
+        assert call_args.kwargs["json"] == {"input": "hello"}
+
         assert resp.status_code == 200
         assert resp.json()["data"][0]["id"] == "text-embedding-3"
