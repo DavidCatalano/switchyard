@@ -22,14 +22,19 @@
   - Store paths reject absolute paths and .. traversal; trailing slash normalization
   - AppSettings consolidated into models.py (was duplicated in loader.py)
   299 tests pass, ruff/mypy clean.
+- 2026-05-02 — Windows path hardening. _require_safe_relative_path() now normalizes
+  backslashes to slashes before checking, rejecting C:/ and C:\\ drive roots,
+  ..\\escape, and foo\\..\\bar. Store host_path remains unrestricted (D:/LLM/models OK).
+  304 tests pass, ruff/mypy clean.
 
 ---
 
 ## Cold Start / Handoff
 
-Read `SEP-002-02-PLAN-config-data-model.md`; Phase 2 is next. Use
-`switchyard-api/src/switchyard/config/models.py` and
-`switchyard-api/tests/test_entity_models.py` for the Phase 1 baseline.
+Read `SEP-002-02-PLAN-config-data-model.md`; Phase 3 is next. Use
+`switchyard-api/src/switchyard/config/models.py`,
+`switchyard-api/src/switchyard/config/loader.py`, and
+`switchyard-api/tests/test_config_resolution.py` as the Phase 2 baseline.
 
 Carry forward: the PRD still has a stale `placements` example; the top-level
 entity is `deployments`.

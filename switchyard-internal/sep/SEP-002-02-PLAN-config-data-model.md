@@ -68,7 +68,7 @@ deployments:
 
 #### Tasks
 - [ ] **T3.1**: Replace old config hierarchy (`GlobalConfig`, `RuntimeDefaults`, `ModelConfig`) with new entity models. Preserve `VLLMRuntimeConfig`'s typed field validation — move/rename it into the new runtime/deployment schema rather than discarding it
-- [ ] **T3.2**: Remove old `config.yaml`; create new `config.yaml` with host/runtime/model/deployment sections (initially empty or with placeholder entries)
+- [ ] **T3.2**: Remove old `config.yaml`; create new `config.yaml` with host/runtime/model/deployment sections. Do not create an empty config. Create a populated config that reflects the known-good compose setup, translated into the SEP-002 entity model. Use `SEP-002-04-CONSULT-host-environment-config.md` for structure, but use `reference-then-delete/vLLM/docker-compose.yml` for concrete trainbox operational values.
 - [ ] **T3.3**: Update `config/loader.py` to load new entity models and `.env` settings via pydantic-settings
 - [ ] **T3.4**: Update app bootstrap to read `.env` settings (log level, active host). Do not force the app layer to own process binding — API host/port remain uvicorn/Makefile concerns
 - [ ] **T3.5**: Update `core/docker.py` to respect `.env` `docker_host` override above the host's canonical `docker_host`
