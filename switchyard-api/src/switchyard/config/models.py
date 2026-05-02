@@ -139,18 +139,33 @@ def _require_safe_relative_path(value: str, field_name: str) -> None:
 
     These paths are within a named store, so they must be relative
     and must not escape the store via ``..`` components.
+
+    Handles both POSIX and Windows path conventions:
+    - Rejects leading ``/`` or ``\\``
+    - Rejects Windows drive roots like ``C:/...`` or ``C:\\...``
+    - Rejects ``..`` segments after normalizing ``\\`` to ``/``
     """
-    if value.startswith("/"):
+    import re
+
+    # Normalize backslashes to forward slashes for unified checks
+    normalized = value.replace("\\", "/")
+
+    # Reject any leading separator (absolute POSIX or UNC-style)
+    if normalized.startswith("/"):
         raise ValueError(
             f"{field_name} must be a relative path (store-relative), "
             f"not an absolute path: {value!r}"
         )
-    if value.startswith("../") or value == "..":
+
+    # Reject Windows drive-rooted paths (e.g. C:/LLM/model or C:\\LLM\\model)
+    if re.match(r"^[A-Za-z]:/", normalized):
         raise ValueError(
-            f"{field_name} must not contain path traversal (..): {value!r}"
+            f"{field_name} must be a relative path (store-relative), "
+            f"not a Windows drive-rooted path: {value!r}"
         )
-    # Also check for .. in the middle of the path
-    parts = value.split("/")
+
+    # Reject .. segments anywhere in the path
+    parts = normalized.split("/")
     if ".." in parts:
         raise ValueError(
             f"{field_name} must not contain path traversal (..): {value!r}"

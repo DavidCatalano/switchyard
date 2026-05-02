@@ -428,6 +428,114 @@ class TestStoreResolution:
         with pytest.raises(ValueError, match="must not contain"):
             ConfigLoader.load_entity_config(path)
 
+    def test_reject_windows_forward_slash_absolute_path(self, tmp_path: Path) -> None:
+        """Reject C:/LLM/model (Windows forward-slash absolute path)."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: C:/LLM/model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="relative path"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_windows_backslash_absolute_path(self, tmp_path: Path) -> None:
+        """Reject C:\\LLM\\model (Windows backslash absolute path)."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: C:\\LLM\\model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="relative path"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_windows_backslash_dotdot(self, tmp_path: Path) -> None:
+        """Reject ..\\escape (Windows backslash traversal)."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: ..\\escape
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must not contain"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_windows_mixed_backslash_traversal(self, tmp_path: Path) -> None:
+        """Reject foo\\..\\bar (Windows mixed backslash traversal)."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: foo\\..\\bar
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="must not contain"):
+            ConfigLoader.load_entity_config(path)
+
     def test_reject_absolute_path_in_storage_override(self, tmp_path: Path) -> None:
         content = dedent("""\
             hosts:
@@ -482,6 +590,35 @@ class TestStoreResolution:
         """)
         path = _write_config(tmp_path, content)
         with pytest.raises(ValueError, match="must not contain"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_reject_windows_drive_in_storage_override(self, tmp_path: Path) -> None:
+        """Reject C:/model in storage override path."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                storage_overrides:
+                  path: C:/LLM/model
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="relative path"):
             ConfigLoader.load_entity_config(path)
 
     def test_trailing_slash_store_paths(self, tmp_path: Path) -> None:
