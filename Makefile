@@ -51,19 +51,6 @@ lint:
 typecheck:
 	cd $(API_DIR) && uv run mypy src
 
-quality: lint typecheck test
-	@echo "✅ All quality gates passed"
-
-# vLLM CPU smoke test (requires Docker, no GPU needed)
-test-vllm-cpu:
-	cd $(API_DIR) && TEST_VLLM_CPU=1 uv run pytest -q -rs -s \
-		tests/test_vllm_integration.py::TestVLLMDocker
-
-# vLLM GPU smoke test (requires Docker + accessible NVIDIA GPU + free VRAM)
-test-vllm-gpu:
-	cd $(API_DIR) && TEST_VLLM_GPU=1 uv run pytest -q -rs -s \
-		tests/test_vllm_integration.py::TestVLLMDocker
-
 # -------------------------------------------------------------------
 # Deployment Smoke Targets
 # -------------------------------------------------------------------
@@ -120,8 +107,6 @@ help:
 	@echo "  lint                   - Run ruff linter"
 	@echo "  typecheck              - Run mypy type checking"
 	@echo "  quality                - Run lint + typecheck + tests (full gates)"
-	@echo "  test-vllm-cpu          - Run vLLM CPU smoke test (no GPU needed)"
-	@echo "  test-vllm-gpu          - Run vLLM GPU smoke test (needs NVIDIA GPU)"
 	@echo "  load-tinyllama-cpu     - Load TinyLlama CPU deployment via API"
 	@echo "  unload-tinyllama-cpu   - Unload TinyLlama CPU deployment via API"
 	@echo "  status                 - Check tunnel and API server status"
@@ -140,7 +125,7 @@ help:
 	@echo "  Terminal 1: make tunnel"
 	@echo "  Terminal 2: make dev"
 
-.PHONY: tunnel dev test lint typecheck quality test-vllm-cpu test-vllm-gpu \
+.PHONY: tunnel dev test lint typecheck quality \
 	load-tinyllama-cpu unload-tinyllama-cpu \
 	docker-ps docker-clean stop status help
 .DEFAULT_GOAL := help
