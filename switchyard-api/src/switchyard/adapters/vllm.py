@@ -16,9 +16,7 @@ import httpx
 from docker import DockerClient
 
 from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
-)
-from switchyard.config.models import (
+    ResolvedDeployment,
     VLLMRuntimeConfig,
 )
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
@@ -72,13 +70,27 @@ class VLLMAdapter(BackendAdapter):
 
     @property
     def _client(self) -> DockerClient:
-        """Lazily create a Docker client if not injected."""
+        """Lazily create a Docker client if not injected.
+
+        When creating a client from ``resolved.docker_host``, this is set
+        via ``_set_docker_client()`` before ``_client`` is accessed.
+        Falls back to ``core.docker.get_docker_client()`` (which reads
+        ``.env``) if no explicit host was configured.
+        """
         if self._docker_client is not None:
             return self._docker_client
         from switchyard.core.docker import get_docker_client
 
         self._docker_client = get_docker_client()
         return self._docker_client
+
+    def _set_docker_client(self, base_url: str) -> None:
+        """Create a Docker client with an explicit base_url.
+
+        Used by ``start()`` to honour ``resolved.docker_host`` when no
+        client was injected at construction time.
+        """
+        self._docker_client = docker.DockerClient(base_url=base_url)
 
     @staticmethod
     def _build_cli_args(runtime: VLLMRuntimeConfig) -> list[str]:
@@ -134,15 +146,15 @@ class VLLMAdapter(BackendAdapter):
 
         return args
 
-    def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
         """Start a vLLM container.
 
-        Builds CLI flags from the runtime config, launches the container
-        via Docker SDK with port binding and resource limits.
+        Builds CLI flags from the resolved deployment config, launches the
+        container via Docker SDK with port binding and resource limits.
 
         Args:
-            model_config: Full model configuration.
-            port: Host port to bind to container port ``_INTERNAL_PORT``.
+            resolved: Fully resolved deployment configuration.
+            port: Host port to bind to container port.
 
         Returns:
             ``DeploymentInfo`` describing the running container.
@@ -150,55 +162,85 @@ class VLLMAdapter(BackendAdapter):
         Raises:
             RuntimeError: If the container fails to start.
         """
-        cli_args = self._build_cli_args(model_config.runtime)
+        # Validate merged runtime args as typed VLLM config for CLI building
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        cli_args = self._build_cli_args(runtime)
+
+        # Use resolved internal port (or fall back to default)
+        internal_port = resolved.internal_port or _INTERNAL_PORT
 
         command = (
-            ["--host", "0.0.0.0", "--port", str(_INTERNAL_PORT)]
+            ["--host", "0.0.0.0", "--port", str(internal_port)]
             + cli_args
         )
 
-        # Environment variables
-        environment: dict[str, str] = {}
-        if model_config.runtime.hf_token:
-            environment["HF_TOKEN"] = model_config.runtime.hf_token
+        # Start with container environment from resolved deployment
+        environment: dict[str, str] = dict(resolved.container_environment)
+        if runtime.hf_token:
+            environment["HF_TOKEN"] = runtime.hf_token
 
         # Resource limits
         kwargs: dict[str, Any] = {
-            "image": model_config.image,
-            "ports": {_INTERNAL_PORT: port},
+            "image": resolved.image,
+            "ports": {internal_port: port},
             "command": command,
             "remove": False,
         }
-        if self._docker_network is not None:
-            kwargs["network"] = self._docker_network
+        if resolved.docker_network:
+            kwargs["network"] = resolved.docker_network
         if environment:
             kwargs["environment"] = environment
 
+        # Merge container options (ipc, ulimits, etc.) from resolved deployment
+        for opt_key, opt_value in resolved.container_options.items():
+            if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
+                kwargs[opt_key].update(opt_value)
+            else:
+                kwargs[opt_key] = opt_value
+
+        # Mount all host stores (models, hf_cache, …)
+        # Uses store_mounts from resolved deployment.
+        kwargs["volumes"] = resolved.store_mounts
+
         # Device-specific configuration
-        runtime_device = model_config.runtime.device or "cuda"
+        runtime_device = runtime.device or "cuda"
         if runtime_device == "cuda":
-            # GPU: request all available NVIDIA GPUs
-            kwargs["device_requests"] = [
-                docker.types.DeviceRequest(
-                    driver="nvidia",
-                    count=-1,
-                    capabilities=[["gpu"]],
-                )
-            ]
+            # GPU: request specific accelerators if placement is set,
+            # otherwise request all available
+            if resolved.accelerator_ids:
+                kwargs["device_requests"] = [
+                    docker.types.DeviceRequest(
+                        driver="nvidia",
+                        device_ids=resolved.accelerator_ids,
+                        capabilities=[["gpu"]],
+                    )
+                ]
+            else:
+                kwargs["device_requests"] = [
+                    docker.types.DeviceRequest(
+                        driver="nvidia",
+                        count=-1,
+                        capabilities=[["gpu"]],
+                    )
+                ]
         else:
             # CPU: set vLLM CPU-specific environment variables
             environment.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
             environment.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
             kwargs["environment"] = environment
-        if model_config.resources.memory:
-            kwargs["mem_limit"] = model_config.resources.memory
 
         logger.info(
             "starting vllm container image=%s port=%d args=%s",
-            model_config.image,
+            resolved.image,
             port,
             cli_args,
         )
+
+        # Use resolved.docker_host for Docker client if not injected.
+        # This ensures the canonical host docker_host from config.yaml
+        # is honoured even without a duplicate .env setting.
+        if self._docker_client is None and resolved.docker_host:
+            self._set_docker_client(resolved.docker_host)
 
         try:
             container = self._client.containers.run(**kwargs, detach=True)

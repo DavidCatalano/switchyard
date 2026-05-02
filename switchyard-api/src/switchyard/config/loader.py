@@ -1,8 +1,5 @@
 """Config loader — YAML parsing, env var overrides, and resolution.
 
-Legacy SEP-001 loader:
-  runtime_defaults.{backend} -> per-model runtime -> extra_args passthrough
-
 SEP-002 entity-based loader:
   hosts, runtimes, models, deployments -> ResolvedDeployment
 """
@@ -10,94 +7,32 @@ SEP-002 entity-based loader:
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-# Use the canonical AppSettings from models.py (SEP-002)
-# This replaces the duplicate AppSettings class that was here.
 from switchyard.config.models import (
     AppSettings,
     Config,
     DeploymentConfig,
     HostConfig,
-    LegacyConfig,
     ModelConfig,
     ResolvedDeployment,
     RuntimeConfig,
-    VLLMRuntimeConfig,
 )
 
 logger = logging.getLogger(__name__)
 
 
-def _deep_merge(
-    base: Mapping[str, Any], override: Mapping[str, Any],
-) -> dict[str, Any]:
-    """Deep-merge two dicts.
-
-    ``override`` values win on conflict. Nested dicts are merged recursively,
-    *except* ``extra_args`` which is merged at the top level (key-level merge).
-    """
-    merged = dict(base)
-    for key, value in override.items():
-        if key == "extra_args":
-            # extra_args: merge key-level, per-model wins on conflict
-            merged[key] = {**merged.get("extra_args", {}), **value}
-        elif (
-            key in merged
-            and isinstance(merged[key], Mapping)
-            and isinstance(value, Mapping)
-        ):
-            merged[key] = _deep_merge(merged[key], value)
-        else:
-            merged[key] = value
-    return merged
-
-
-def _resolve_cascade(config: LegacyConfig) -> LegacyConfig:
-    """Apply the three-level cascade to each model's runtime config.
-
-    For each model:
-      1. Start with runtime_defaults.{backend} dict (if any)
-      2. Merge per-model runtime dict on top (per-model wins)
-      3. extra_args are merged additively (per-model wins on key conflict)
-      4. Re-validate as VLLMRuntimeConfig
-    """
-    for name, model in config.models.items():
-        backend = model.backend
-
-        # Get defaults dict for this backend (if any)
-        defaults_dict = config.runtime_defaults.get_backend_defaults(backend)
-
-        # Per-model runtime as dict
-        model_dict = model.runtime.model_dump(exclude_none=True)
-
-        if not defaults_dict:
-            continue
-
-        # Deep-merge defaults + per-model (per-model wins)
-        merged = _deep_merge(defaults_dict, model_dict)
-
-        # Re-validate as typed VLLMRuntimeConfig
-        model.runtime = VLLMRuntimeConfig.model_validate(merged)
-        logger.debug("resolved cascade for model %r: backend=%s", name, backend)
-
-    return config
-
-
 class ConfigLoader:
     """Loads and validates YAML configuration.
 
-    Three-level cascade is applied automatically:
-      global -> runtime_defaults.{backend} -> models.{name}.runtime
-
-    Env vars override global config values after loading.
+    Reads entity-based config (hosts, runtimes, models, deployments) from
+    a YAML file and validates cross-entity references at load time.
     """
 
     @classmethod
-    def load(cls, path: Path | str | None = None) -> LegacyConfig:
-        """Load config from YAML file.
+    def load(cls, path: Path | str | None = None) -> Config:
+        """Load entity-based config from YAML file.
 
         ``path`` can be omitted if ``SWITCHYARD_CONFIG_PATH`` is set.
 
@@ -116,14 +51,16 @@ class ConfigLoader:
             raise ValueError(f"config file not found: {file_path}")
 
         raw = cls._read_yaml(file_path)
-        config = cls._validate(raw)
-        config = cls._apply_env_overrides(config)
-        config = _resolve_cascade(config)
+        config = Config.model_validate(raw)
 
         logger.info(
-            "loaded config from %s: %d model(s)",
+            "loaded config from %s: %d host(s), %d runtime(s), "
+            "%d model(s), %d deployment(s)",
             file_path,
+            len(config.hosts),
+            len(config.runtimes),
             len(config.models),
+            len(config.deployments),
         )
         return config
 
@@ -146,46 +83,12 @@ class ConfigLoader:
         return data
 
     @staticmethod
-    def _validate(raw: dict[str, Any]) -> LegacyConfig:
-        """Validate raw dict against Pydantic models."""
-        return LegacyConfig.model_validate(raw)
-
-    @staticmethod
-    def _apply_env_overrides(config: LegacyConfig) -> LegacyConfig:
-        """Apply environment variable overrides to global config."""
-        settings = AppSettings()
-        if settings.base_port is not None:
-            config.global_config.base_port = settings.base_port
-        if settings.log_level is not None:
-            config.global_config.log_level = settings.log_level
-        if settings.docker_network is not None:
-            config.global_config.docker_network = settings.docker_network
-        if settings.backend_host is not None:
-            config.global_config.backend_host = settings.backend_host
-        if settings.backend_scheme is not None:
-            config.global_config.backend_scheme = settings.backend_scheme
-        return config
-
-    @staticmethod
     def load_entity_config(path: Path | str) -> Config:
-        """Load entity-based (SEP-002) config from YAML file."""
-        file_path = Path(path)
-        if not file_path.is_file():
-            raise ValueError(f"config file not found: {file_path}")
+        """Load entity-based (SEP-002) config from YAML file.
 
-        raw = ConfigLoader._read_yaml(file_path)
-        config = Config.model_validate(raw)
-
-        logger.info(
-            "loaded entity config from %s: %d host(s), %d runtime(s), "
-            "%d model(s), %d deployment(s)",
-            file_path,
-            len(config.hosts),
-            len(config.runtimes),
-            len(config.models),
-            len(config.deployments),
-        )
-        return config
+        Alias for ``load()`` retained for compatibility during migration.
+        """
+        return ConfigLoader.load(path)
 
 
 # =====================================================================
@@ -203,12 +106,14 @@ def resolve_deployment(
       1. Look up the deployment by name (references already validated at load)
       2. Resolve model, runtime, host references
       3. Resolve store paths (host path + container path)
-      4. Cascade-merge runtime args: runtime defaults -> model runtime_defaults
-         -> deployment runtime_overrides -> deployment extra_args
-      5. Cascade-merge container config: host container_defaults -> deployment
+      4. Resolve all host store mounts (for volume mapping)
+      5. Cascade-merge runtime args: model defaults -> runtime defaults ->
+         model runtime_defaults -> deployment runtime_overrides. deployment
+         extra_args are nested under runtime_args["extra_args"].
+      6. Cascade-merge container config: host container_defaults -> deployment
          container_overrides
-      6. Apply .env docker_host override
-      7. Produce ResolvedDeployment
+      7. Apply .env docker_host override
+      8. Produce ResolvedDeployment
     """
     deployment = config.deployments.get(deployment_name)
     if deployment is None:
@@ -227,9 +132,18 @@ def resolve_deployment(
     )
 
     # 3. Cascade-merge runtime args
+    # Order: model defaults -> runtime defaults -> model runtime_defaults
+    #        -> deployment runtime_overrides (extra_args nested separately)
     runtime_args = _merge_runtime_args(runtime_cfg, model_cfg, deployment)
 
-    # 4. Cascade-merge container config
+    # Inject resolved model path into runtime args.
+    # The adapter's _build_cli_args reads runtime.model for --model flag.
+    runtime_args["model"] = container_path
+
+    # 4. Resolve all host store mounts for volume mapping
+    store_mounts = _resolve_all_stores(host_cfg)
+
+    # 5. Cascade-merge container config
     container_env, container_options = _merge_container_config(
         host_cfg, deployment,
     )
@@ -268,6 +182,7 @@ def resolve_deployment(
         runtime_args=runtime_args,
         container_environment=container_env,
         container_options=container_options,
+        store_mounts=store_mounts,
         model_defaults=model_cfg.defaults,
     )
 
@@ -306,6 +221,21 @@ def _resolve_store_path(
     )
 
 
+def _resolve_all_stores(host_cfg: HostConfig) -> dict[str, dict[str, str]]:
+    """Build Docker volume mount dicts for all host stores.
+
+    Returns ``{host_path: {"bind": container_path, "mode": mode}}``
+    for every store defined on the host. The adapter mounts these as
+    the container's volumes so model weights and HF cache are visible.
+    """
+    mounts: dict[str, dict[str, str]] = {}
+    for store_cfg in host_cfg.stores.values():
+        host_base = store_cfg.host_path.rstrip("/")
+        container_base = store_cfg.container_path.rstrip("/")
+        mounts[host_base] = {"bind": container_base, "mode": store_cfg.mode}
+    return mounts
+
+
 def _merge_runtime_args(
     runtime_cfg: RuntimeConfig,
     model_cfg: ModelConfig,
@@ -313,20 +243,32 @@ def _merge_runtime_args(
 ) -> dict[str, Any]:
     """Merge runtime args in cascade order.
 
-    Order (later wins on conflict):
-      1. Runtime defaults
-      2. Model runtime_defaults
-      3. Deployment runtime_overrides
-      4. Deployment extra_args
+    Typed layers (1–4) merge as top-level fields in the returned dict.
+    deployment.extra_args is nested under "extra_args" to preserve the
+    escape hatch: VLLMRuntimeConfig.model_validate() reads
+    runtime_args["extra_args"] as its catch-all, so unknown keys are not
+    silently dropped.
+
+    Order (later wins on conflict for typed layers):
+      1. Model defaults (served_model_name, reasoning_parser, etc.)
+      2. Runtime defaults
+      3. Model runtime_defaults
+      4. Deployment runtime_overrides
     """
     merged: dict[str, Any] = {}
     for layer in (
+        model_cfg.defaults or {},
         runtime_cfg.defaults,
         model_cfg.runtime_defaults,
         deployment.runtime_overrides,
-        deployment.extra_args,
     ):
         merged.update(layer)
+
+    # Nested extra_args escape hatch: unknown keys survive resolution
+    # and appear as VLLMRuntimeConfig.extra_args at CLI-building time.
+    if deployment.extra_args:
+        merged["extra_args"] = dict(deployment.extra_args)
+
     return merged
 
 

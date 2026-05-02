@@ -650,6 +650,48 @@ class TestStoreResolution:
         assert resolved.model_host_path == "/data/models/my-model"
         assert resolved.model_container_path == "/models/my-model"
 
+    def test_store_mounts_includes_all_host_stores(self, tmp_path: Path) -> None:
+        """store_mounts contains all stores defined on the host."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+                    mode: ro
+                  hf_cache:
+                    host_path: /data/hf-cache
+                    container_path: /hf-cache
+                    mode: rw
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: my-model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        # Both stores present
+        assert "/data/models" in resolved.store_mounts
+        assert "/data/hf-cache" in resolved.store_mounts
+        # Correct bind targets and modes
+        assert resolved.store_mounts["/data/models"] == {
+            "bind": "/models", "mode": "ro",
+        }
+        assert resolved.store_mounts["/data/hf-cache"] == {
+            "bind": "/hf-cache", "mode": "rw",
+        }
+
 
 # ---------------------------------------------------------------------------
 # T2.4 — Runtime cascade merge
@@ -711,7 +753,83 @@ class TestRuntimeCascade:
         assert resolved.runtime_args["dtype"] == "auto"
         assert resolved.runtime_args["max_model_len"] == 50000
         assert resolved.runtime_args["tensor_parallel_size"] == 1
-        assert resolved.runtime_args["custom_flag"] is True
+        # extra_args are nested under runtime_args["extra_args"] to preserve
+        # the escape hatch: VLLMRuntimeConfig reads them from that key.
+        assert resolved.runtime_args["extra_args"] == {"custom_flag": True}
+
+    def test_extra_args_survive_as_vllm_config(self, tmp_path: Path) -> None:
+        """extra_args nested under runtime_args survive VLLMRuntimeConfig
+        validation and appear in the extra_args catch-all."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  unknown-thing: 42
+                  another-flag: true
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        from switchyard.config.models import VLLMRuntimeConfig
+
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        assert runtime.extra_args["unknown-thing"] == 42
+        assert runtime.extra_args["another-flag"] is True
+
+    def test_extra_args_rendered_as_cli_flags(self, tmp_path: Path) -> None:
+        """Adapter builds --flag value CLI args from extra_args."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  some-weird-flag: weird-value
+                  boolean-flag: true
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        from switchyard.adapters.vllm import VLLMAdapter
+        from switchyard.config.models import VLLMRuntimeConfig
+
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        args = VLLMAdapter._build_cli_args(runtime)
+        assert "--some-weird-flag" in args
+        assert "weird-value" in args
+        assert "--boolean-flag" in args
 
 
 # ---------------------------------------------------------------------------
@@ -901,3 +1019,11 @@ class TestRealisticFixture:
 
         # Docker
         assert resolved.docker_network == "model-runtime"
+        assert resolved.docker_host is None
+
+        # Store mounts: all host stores present
+        assert len(resolved.store_mounts) == 2
+        assert "/data/LLM/oobabooga/models" in resolved.store_mounts
+        assert "/data/LLM/huggingface" in resolved.store_mounts
+        assert resolved.store_mounts["/data/LLM/oobabooga/models"]["mode"] == "ro"
+        assert resolved.store_mounts["/data/LLM/huggingface"]["mode"] == "rw"

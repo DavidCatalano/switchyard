@@ -10,10 +10,8 @@ import asyncio
 import logging
 
 from switchyard.config.models import (
-    LegacyConfig as Config,
-)
-from switchyard.config.models import (
-    LegacyModelConfig as ModelConfig,
+    Config,
+    ResolvedDeployment,
 )
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.orphan import OrphanDetector, _DockerClient
@@ -70,9 +68,9 @@ class LifecycleManager:
         return self._adapters[backend]
 
     async def load_model(
-        self, model_name: str, model_config: ModelConfig,
+        self, deployment_name: str, resolved: ResolvedDeployment,
     ) -> DeploymentInfo:
-        """Start a model deployment.
+        """Start a deployment.
 
         Allocates a port, starts the container via the backend adapter,
         records the deployment in state as ``"loading"``, and begins
@@ -81,36 +79,36 @@ class LifecycleManager:
         Returns immediately (non-blocking).
 
         Args:
-            model_name: Logical model identifier.
-            model_config: Full model configuration.
+            deployment_name: Logical deployment identifier.
+            resolved: Fully resolved deployment configuration.
 
         Returns:
             ``DeploymentInfo`` with ``status="loading"``.
 
         Raises:
-            ValueError: If the model is already deployed.
+            ValueError: If the deployment is already loaded.
             KeyError: If the backend is not registered.
         """
         # Check for duplicates
-        if model_name in self.state.list_deployments():
-            existing = self.state.get(model_name)
+        if deployment_name in self.state.list_deployments():
+            existing = self.state.get(deployment_name)
             raise ValueError(
-                f"model {model_name!r} is already deployed "
+                f"deployment {deployment_name!r} is already deployed "
                 f"(status: {existing.status!r})"
             )
 
-        backend = model_config.backend
+        backend = resolved.backend
         adapter = self._get_adapter(backend)
 
         # Allocate port
         port = self.port_allocator.allocate()
 
         # Start container via adapter
-        deployment = adapter.start(model_config, port)
+        deployment = adapter.start(resolved, port)
 
         # Record in state as "loading"
         loading_info = DeploymentInfo(
-            model_name=model_name,
+            model_name=deployment_name,
             backend=deployment.backend,
             port=deployment.port,
             status="loading",
@@ -122,42 +120,42 @@ class LifecycleManager:
 
         # Spawn background health checker
         task = asyncio.create_task(
-            self._health_poll(model_name, deployment),
-            name=f"health-{model_name}",
+            self._health_poll(deployment_name, deployment),
+            name=f"health-{deployment_name}",
         )
-        self._health_tasks[model_name] = task
+        self._health_tasks[deployment_name] = task
 
         logger.info(
-            "model %s loading (backend=%s port=%d container=%s)",
-            model_name,
+            "deployment %s loading (backend=%s port=%d container=%s)",
+            deployment_name,
             backend,
             port,
             deployment.container_id,
         )
         return loading_info
 
-    async def unload_model(self, model_name: str) -> None:
-        """Stop and remove a model deployment.
+    async def unload_model(self, deployment_name: str) -> None:
+        """Stop and remove a deployment.
 
         Stops the container via the adapter, releases the port,
         cancels the background health task, and removes state.
 
         Args:
-            model_name: The model to unload.
+            deployment_name: The deployment to unload.
 
         Raises:
-            KeyError: If the model is not found in state.
+            KeyError: If the deployment is not found in state.
         """
-        deployment = self.state.get(model_name)
+        deployment = self.state.get(deployment_name)
 
         # Cancel health poll
-        if model_name in self._health_tasks:
-            self._health_tasks[model_name].cancel()
+        if deployment_name in self._health_tasks:
+            self._health_tasks[deployment_name].cancel()
             try:
-                await self._health_tasks[model_name]
+                await self._health_tasks[deployment_name]
             except asyncio.CancelledError:
                 pass
-            del self._health_tasks[model_name]
+            del self._health_tasks[deployment_name]
 
         # Stop via adapter
         adapter = self._get_adapter(deployment.backend)
@@ -167,25 +165,28 @@ class LifecycleManager:
         self.port_allocator.release(deployment.port)
 
         # Remove state
-        self.state.remove(model_name)
+        self.state.remove(deployment_name)
 
-        logger.info("model %s unloaded (port=%d released)", model_name, deployment.port)
+        logger.info(
+            "deployment %s unloaded (port=%d released)",
+            deployment_name, deployment.port,
+        )
 
-    def get_status(self, model_name: str) -> str:
-        """Get the current status of a model deployment.
+    def get_status(self, deployment_name: str) -> str:
+        """Get the current status of a deployment.
 
         Args:
-            model_name: The model identifier.
+            deployment_name: The deployment identifier.
 
         Returns:
             Status string (``"running"``, ``"loading"``, ``"error"``, ``"stopped"``).
 
         Raises:
-            KeyError: If the model is not found.
+            KeyError: If the deployment is not found.
         """
-        return self.state.get(model_name).status
+        return self.state.get(deployment_name).status
 
-    async def _health_poll(self, model_name: str, initial: DeploymentInfo) -> None:
+    async def _health_poll(self, deployment_name: str, initial: DeploymentInfo) -> None:
         """Background task: poll adapter health until running or error.
 
         Transitions the deployment from ``"loading"`` to ``"running"``
@@ -196,7 +197,7 @@ class LifecycleManager:
         transitions to ``"error"``.
 
         Args:
-            model_name: The model being polled.
+            deployment_name: The deployment being polled.
             initial: The initial deployment info from adapter.start().
         """
         adapter = self._get_adapter(initial.backend)
@@ -214,12 +215,12 @@ class LifecycleManager:
                 health_status = adapter.health(poll_info)
             except Exception:
                 logger.warning(
-                    "health check exception for model %s",
-                    model_name, exc_info=True,
+                    "health check exception for deployment %s",
+                    deployment_name, exc_info=True,
                 )
                 if timed_out:
                     try:
-                        self.state.update_status(model_name, "error")
+                        self.state.update_status(deployment_name, "error")
                     except KeyError:
                         return
                     break
@@ -228,21 +229,21 @@ class LifecycleManager:
 
             if health_status == "running":
                 try:
-                    poll_info = self.state.update_status(model_name, "running")
+                    poll_info = self.state.update_status(deployment_name, "running")
                 except KeyError:
                     return  # unloaded during poll
-                logger.info("model %s is running", model_name)
+                logger.info("deployment %s is running", deployment_name)
                 break
             else:
                 if not timed_out:
                     continue  # still loading, keep polling
                 try:
-                    poll_info = self.state.update_status(model_name, "error")
+                    poll_info = self.state.update_status(deployment_name, "error")
                 except KeyError:
                     return
                 logger.error(
-                    "model %s health check failed after %.0fs: %s",
-                    model_name, elapsed, health_status,
+                    "deployment %s health check failed after %.0fs: %s",
+                    deployment_name, elapsed, health_status,
                 )
                 break
 
@@ -282,29 +283,21 @@ class LifecycleManager:
         for name in results.removed:
             logger.info("bootstrap: removed orphan %s", name)
 
-        # 3. Auto-start models not already in state
-        adopted_names = {o.model_name for o in results.adopted}
-        for name, model_config in config.models.items():
-            if model_config.control.auto_start and name not in adopted_names:
-                try:
-                    await self.load_model(name, model_config)
-                except Exception:
-                    logger.error(
-                        "bootstrap: failed to auto-start %s", name,
-                        exc_info=True,
-                    )
+        # 3. Auto-start is handled via deployment lifecycle (SEP-003).
+        #    During migration, this loop is a stub — no auto-start behavior.
+        pass  # pragma: no cover - auto-start wiring is SEP-003
     async def _wait_for_status(
         self,
-        model_name: str,
+        deployment_name: str,
         target: str,
         timeout: float = 10.0,
     ) -> DeploymentInfo:
-        """Block until the model reaches the target status.
+        """Block until the deployment reaches the target status.
 
         Primarily useful for tests; not part of the public API contract.
 
         Args:
-            model_name: The model to wait for.
+            deployment_name: The deployment to wait for.
             target: The desired status.
             timeout: Maximum seconds to wait.
 
@@ -317,15 +310,17 @@ class LifecycleManager:
         deadline = asyncio.get_event_loop().time() + timeout
         while asyncio.get_event_loop().time() < deadline:
             try:
-                status = self.get_status(model_name)
+                status = self.get_status(deployment_name)
             except KeyError:
                 raise TimeoutError(
-                    f"model {model_name!r} disappeared while waiting for {target!r}"
+                    f"deployment {deployment_name!r} disappeared "
+                    f"while waiting for {target!r}"
                 )
             if status == target:
-                return self.state.get(model_name)
+                return self.state.get(deployment_name)
             await asyncio.sleep(0.1)
 
         raise TimeoutError(
-            f"model {model_name!r} did not reach status {target!r} within {timeout}s"
+            f"deployment {deployment_name!r} did not reach status "
+            f"{target!r} within {timeout}s"
         )

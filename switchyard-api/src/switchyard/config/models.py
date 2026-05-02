@@ -1,9 +1,6 @@
 """Pydantic configuration models for Switchyard.
 
-Legacy SEP-001 models (prefixed ``Legacy``):
-  global -> runtime_defaults.{backend} -> models.{name}.runtime
-
-SEP-002 entity models:
+Entity models (SEP-002):
   hosts, runtimes, models, deployments
 
 VLLMRuntimeConfig promotes all Tier 1 and Tier 2 vLLM fields as named
@@ -336,6 +333,10 @@ class ResolvedDeployment:
     container_environment: dict[str, str]
     container_options: dict[str, Any]
 
+    # Store mounts: {host_path: {"bind": container_path, "mode": mode}}
+    # Populated from all host stores for volume mounting.
+    store_mounts: dict[str, dict[str, str]]
+
     # Model defaults (portable)
     model_defaults: dict[str, Any] | None
 
@@ -373,47 +374,21 @@ class AppSettings(BaseSettings):
     health_timeout_seconds: float | None = None
 
 
-# =====================================================================
-# Legacy SEP-001 Models (to be removed in Phase 3)
-# =====================================================================
-
-
-class LegacyGlobalConfig(BaseModel):
-    """Switchyard-wide settings (host, network, ports, log level)."""
-
-    docker_network: str = "model-runtime"
-    base_port: int = 8000
-    log_level: str = "info"
-    backend_host: str = "localhost"
-    backend_scheme: str = "http"
-
-
-class LegacyResourcesConfig(BaseModel):
-    """Per-model resource constraints."""
-
-    memory: str | None = None
-
-
-class LegacyControlConfig(BaseModel):
-    """Per-model control settings."""
-
-    auto_start: bool = False
-
-
 class VLLMRuntimeConfig(BaseModel):
     """Typed vLLM runtime configuration.
 
     Promotes all Tier 1 and Tier 2 fields as named Pydantic fields.
     Tier 3+ use the ``extra_args`` catch-all mapping.
 
-    Fields are grouped by vLLM internal argument categories for readability.
-    No runtime branching on tier — all named fields translate to CLI flags
-    identically via the adapter.
+    Used by the vLLM adapter to build CLI flags and by the resolver to
+    validate merged runtime arguments. Fields are grouped by vLLM internal
+    argument categories for readability.
     """
 
     # --- Model & Tokenizer (ModelConfig) ---
     # Essential model identity: local path OR HuggingFace repo ID.
-    # Enforced at the LegacyModelConfig level (exactly one required).
+    # In the SEP-002 entity model, the model path comes from store
+    # resolution; these fields are kept for adapter compatibility.
     model: str | None = None
     repo: str | None = None
 
@@ -490,76 +465,4 @@ class VLLMRuntimeConfig(BaseModel):
     extra_args: dict[str, Any] = Field(default_factory=dict)
 
 
-class LegacyModelConfig(BaseModel):
-    """Per-model configuration entry (SEP-001)."""
 
-    backend: str
-    image: str
-    control: LegacyControlConfig = Field(default_factory=LegacyControlConfig)
-    resources: LegacyResourcesConfig = Field(
-        default_factory=LegacyResourcesConfig
-    )
-    runtime: VLLMRuntimeConfig = Field(default_factory=VLLMRuntimeConfig)
-
-    @model_validator(mode="after")
-    def _validate_model_source(self) -> LegacyModelConfig:
-        """Exactly one of model or repo must be set in runtime config."""
-        has_model = self.runtime.model is not None
-        has_repo = self.runtime.repo is not None
-        if not (has_model ^ has_repo):
-            raise ValueError(
-                "exactly one of 'model' (local path) or 'repo' (HuggingFace) "
-                "must be set in runtime config"
-            )
-        return self
-
-
-class LegacyRuntimeDefaults(BaseModel):
-    """Per-engine defaults that cascade to all models of a given backend (SEP-001).
-
-    Uses ``extra = "allow"`` so any key (backend name) becomes an attribute.
-    Each value is a ``dict[str, Any]`` merged with per-model runtime config
-    by the loader.
-
-    Example:
-        runtime_defaults:
-            vllm:
-                gpu_memory_utilization: 0.92
-            koboldcpp:
-                n_gpu_layers: -1
-    """
-
-    model_config = {"extra": "allow"}
-
-    def get_backend_defaults(self, backend: str) -> dict[str, Any]:
-        """Get defaults dict for a given backend name."""
-        extra = self.__pydantic_extra__ or {}
-        return dict(extra.get(backend) or {})
-
-
-class LegacyConfig(BaseModel):
-    """Top-level YAML configuration (SEP-001).
-
-    Three-level cascade:
-      global -> runtime_defaults.{backend} -> models.{name}.runtime
-    """
-
-    global_config: LegacyGlobalConfig = Field(
-        default_factory=LegacyGlobalConfig, alias="global"
-    )
-    runtime_defaults: LegacyRuntimeDefaults = Field(
-        default_factory=LegacyRuntimeDefaults
-    )
-    models: dict[str, LegacyModelConfig] = Field(default_factory=dict)
-
-    def __init__(self, **kwargs: Any) -> None:
-        super().__init__(**kwargs)
-        # Validation happens automatically via @model_validator on each
-        # LegacyModelConfig. No explicit loop needed.
-
-
-# Backward-compatibility aliases (remove in Phase 3)
-GlobalConfig = LegacyGlobalConfig
-ResourcesConfig = LegacyResourcesConfig
-ControlConfig = LegacyControlConfig
-RuntimeDefaults = LegacyRuntimeDefaults
