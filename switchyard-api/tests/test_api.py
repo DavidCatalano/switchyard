@@ -14,12 +14,16 @@ from fastapi.testclient import TestClient
 
 from switchyard.app import create_app
 from switchyard.config.models import (
-    Config,
     ControlConfig,
     GlobalConfig,
-    ModelConfig,
     RuntimeDefaults,
     VLLMRuntimeConfig,
+)
+from switchyard.config.models import (
+    LegacyConfig as Config,
+)
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
 )
 
 

@@ -22,7 +22,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from switchyard.config.models import (
-    ModelConfig,
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
     ResourcesConfig,
     VLLMRuntimeConfig,
 )

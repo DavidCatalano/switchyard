@@ -15,7 +15,12 @@ import docker
 import httpx
 from docker import DockerClient
 
-from switchyard.config.models import ModelConfig, VLLMRuntimeConfig
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
+    VLLMRuntimeConfig,
+)
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.registry import AdapterRegistry
 

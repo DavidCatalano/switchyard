@@ -9,7 +9,12 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from switchyard.config.models import Config, ModelConfig
+from switchyard.config.models import (
+    LegacyConfig as Config,
+)
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.orphan import OrphanDetector, _DockerClient
 from switchyard.core.ports import PortAllocator

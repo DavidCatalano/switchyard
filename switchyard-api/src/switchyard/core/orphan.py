@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from switchyard.config.models import Config
+from switchyard.config.models import LegacyConfig as Config
 from switchyard.core.adapter import DeploymentInfo
 
 logger = logging.getLogger(__name__)

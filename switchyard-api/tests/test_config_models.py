@@ -3,13 +3,17 @@
 import pytest
 
 from switchyard.config.models import (
-    Config,
     ControlConfig,
     GlobalConfig,
-    ModelConfig,
     ResourcesConfig,
     RuntimeDefaults,
     VLLMRuntimeConfig,
+)
+from switchyard.config.models import (
+    LegacyConfig as Config,
+)
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
 )
 
 

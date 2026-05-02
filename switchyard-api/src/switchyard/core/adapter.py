@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from switchyard.config.models import ModelConfig
+from switchyard.config.models import LegacyModelConfig as ModelConfig
 
 DeploymentStatus = str
 _STATUS_VALUES = ("running", "stopped", "loading", "error")

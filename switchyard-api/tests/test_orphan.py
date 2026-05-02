@@ -13,7 +13,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from switchyard.config.models import Config, ModelConfig, VLLMRuntimeConfig
+from switchyard.config.models import (
+    LegacyConfig as Config,
+)
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
+    VLLMRuntimeConfig,
+)
 from switchyard.core.orphan import OrphanDetector
 
 

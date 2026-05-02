@@ -1,7 +1,10 @@
-"""Pydantic configuration models for Switchyard YAML configuration.
+"""Pydantic configuration models for Switchyard.
 
-Defines typed models for the three-level config cascade:
+Legacy SEP-001 models (prefixed ``Legacy``):
   global -> runtime_defaults.{backend} -> models.{name}.runtime
+
+SEP-002 entity models:
+  hosts, runtimes, models, deployments
 
 VLLMRuntimeConfig promotes all Tier 1 and Tier 2 vLLM fields as named
 Pydantic fields; Tier 3+ use the extra_args catch-all.
@@ -11,10 +14,229 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic_settings import BaseSettings
+
+# =====================================================================
+# SEP-002 Entity Models
+# =====================================================================
 
 
-class GlobalConfig(BaseModel):
+def _non_empty_string(value: str) -> str:
+    """Validate that a config string is not empty or whitespace."""
+    if not value.strip():
+        raise ValueError("must not be empty")
+    return value
+
+
+class AcceleratorConfig(BaseModel):
+    """A single accelerator (GPU/CPU device) on a host."""
+
+    id: str
+    type: Literal["cuda", "cpu", "mps", "rocm"] = "cuda"
+    vram_gb: int | None = None
+
+    _validate_id = field_validator("id")(_non_empty_string)
+
+
+class StoreConfig(BaseModel):
+    """Named host/container path mapping for model or cache storage."""
+
+    host_path: str
+    container_path: str
+    mode: Literal["ro", "rw"] = "ro"
+
+    _validate_paths = field_validator("host_path", "container_path")(
+        _non_empty_string
+    )
+
+
+class ContainerDefaults(BaseModel):
+    """Host-level container environment and Docker options."""
+
+    environment: dict[str, str] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class HostConfig(BaseModel):
+    """Machine-specific infrastructure configuration.
+
+    Owns Docker connectivity, port ranges, named stores, accelerator
+    inventory, and container defaults for a single host machine.
+    """
+
+    docker_host: str | None = None
+    docker_network: str = "model-runtime"
+    backend_host: str = "localhost"
+    backend_scheme: str = "http"
+    port_range: list[int] = Field(default_factory=lambda: [8000, 8100])
+    accelerators: list[AcceleratorConfig] = Field(default_factory=list)
+    stores: dict[str, StoreConfig] = Field(default_factory=dict)
+    container_defaults: ContainerDefaults = Field(
+        default_factory=ContainerDefaults
+    )
+
+    @model_validator(mode="after")
+    def _validate_port_range(self) -> HostConfig:
+        """port_range must be exactly two ints, start <= end, valid range."""
+        pr = self.port_range
+        if len(pr) != 2:
+            raise ValueError(
+                "port_range must have exactly 2 elements [start, end]"
+            )
+        if pr[0] > pr[1]:
+            raise ValueError(
+                f"port_range start ({pr[0]}) must be <= end ({pr[1]})"
+            )
+        if pr[0] < 1 or pr[1] > 65535:
+            raise ValueError(
+                f"port_range values must be in 1-65535, got [{pr[0]}, {pr[1]}]"
+            )
+        return self
+
+
+class RuntimeContainerDefaults(BaseModel):
+    """Runtime-level container defaults."""
+
+    internal_port: int = 8000
+
+
+class RuntimeConfig(BaseModel):
+    """Backend engine definition and default launch behavior.
+
+    Owns the container image, CLI flag defaults, and runtime-level
+    container defaults for a named runtime (e.g. ``vllm``, ``sglang``).
+    """
+
+    backend: str
+    image: str | None = None
+    defaults: dict[str, Any] = Field(default_factory=dict)
+    container_defaults: RuntimeContainerDefaults = Field(
+        default_factory=RuntimeContainerDefaults
+    )
+
+    _validate_backend = field_validator("backend")(_non_empty_string)
+
+
+class ModelSource(BaseModel):
+    """Model source — a reference to a named store + path within it."""
+
+    store: str
+    path: str
+
+    _validate_source = field_validator("store", "path")(_non_empty_string)
+
+
+class ModelConfig(BaseModel):
+    """Logical model source and portable model-family defaults.
+
+    Points to a named ``store`` rather than an absolute host path,
+    enabling model configs to be portable across hosts.
+    """
+
+    source: ModelSource
+    defaults: dict[str, Any] | None = None
+    runtime_defaults: dict[str, Any] = Field(default_factory=dict)
+
+
+class Placement(BaseModel):
+    """Hardware placement — accelerator selection for a deployment."""
+
+    accelerator_ids: list[str] = Field(min_length=1)
+
+    @field_validator("accelerator_ids")
+    @classmethod
+    def _validate_accelerator_ids(cls, value: list[str]) -> list[str]:
+        for accelerator_id in value:
+            _non_empty_string(accelerator_id)
+        return value
+
+    @model_validator(mode="after")
+    def _validate_non_empty(self) -> Placement:
+        """placement must select at least one accelerator."""
+        if not self.accelerator_ids:
+            raise ValueError(
+                "placement.accelerator_ids must contain at least one ID"
+            )
+        return self
+
+
+class StorageOverrides(BaseModel):
+    """Storage overrides for a deployment."""
+
+    path: str
+
+    _validate_path = field_validator("path")(_non_empty_string)
+
+
+class ContainerOverrides(BaseModel):
+    """Container overrides for a deployment."""
+
+    environment: dict[str, str] = Field(default_factory=dict)
+    options: dict[str, Any] = Field(default_factory=dict)
+
+
+class DeploymentConfig(BaseModel):
+    """Concrete deployment: run this model with this runtime on this host.
+
+    Owns concrete tuning overrides, placement, storage overrides,
+    container overrides, and the ``extra_args`` escape hatch.
+    """
+
+    model: str
+    runtime: str
+    host: str
+    runtime_overrides: dict[str, Any] = Field(default_factory=dict)
+    storage_overrides: StorageOverrides | None = None
+    placement: Placement | None = None
+    container_overrides: ContainerOverrides | None = None
+    extra_args: dict[str, Any] = Field(default_factory=dict)
+
+    _validate_refs = field_validator("model", "runtime", "host")(
+        _non_empty_string
+    )
+
+
+class Config(BaseModel):
+    """Top-level entity-based YAML configuration (SEP-002).
+
+    Four top-level sections: hosts, runtimes, models, deployments.
+    """
+
+    hosts: dict[str, HostConfig] = Field(default_factory=dict)
+    runtimes: dict[str, RuntimeConfig] = Field(default_factory=dict)
+    models: dict[str, ModelConfig] = Field(default_factory=dict)
+    deployments: dict[str, DeploymentConfig] = Field(default_factory=dict)
+
+
+class AppSettings(BaseSettings):
+    """Process-local bootstrap settings from .env.
+
+    Answers: "how does this Switchyard process start on this machine?"
+    Owned by .env, not config.yaml.
+    """
+
+    model_config = {
+        "env_prefix": "SWITCHYARD_",
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",
+    }
+
+    config_path: str | None = None
+    log_level: str | None = None
+    api_host: str | None = None
+    api_port: int | None = None
+    active_host: str | None = None
+    docker_host: str | None = None
+
+
+# =====================================================================
+# Legacy SEP-001 Models (to be removed in Phase 3)
+# =====================================================================
+
+
+class LegacyGlobalConfig(BaseModel):
     """Switchyard-wide settings (host, network, ports, log level)."""
 
     docker_network: str = "model-runtime"
@@ -24,13 +246,13 @@ class GlobalConfig(BaseModel):
     backend_scheme: str = "http"
 
 
-class ResourcesConfig(BaseModel):
+class LegacyResourcesConfig(BaseModel):
     """Per-model resource constraints."""
 
     memory: str | None = None
 
 
-class ControlConfig(BaseModel):
+class LegacyControlConfig(BaseModel):
     """Per-model control settings."""
 
     auto_start: bool = False
@@ -49,7 +271,7 @@ class VLLMRuntimeConfig(BaseModel):
 
     # --- Model & Tokenizer (ModelConfig) ---
     # Essential model identity: local path OR HuggingFace repo ID.
-    # Enforced at the ModelConfig level (exactly one required).
+    # Enforced at the LegacyModelConfig level (exactly one required).
     model: str | None = None
     repo: str | None = None
 
@@ -126,17 +348,19 @@ class VLLMRuntimeConfig(BaseModel):
     extra_args: dict[str, Any] = Field(default_factory=dict)
 
 
-class ModelConfig(BaseModel):
-    """Per-model configuration entry."""
+class LegacyModelConfig(BaseModel):
+    """Per-model configuration entry (SEP-001)."""
 
     backend: str
     image: str
-    control: ControlConfig = Field(default_factory=ControlConfig)
-    resources: ResourcesConfig = Field(default_factory=ResourcesConfig)
+    control: LegacyControlConfig = Field(default_factory=LegacyControlConfig)
+    resources: LegacyResourcesConfig = Field(
+        default_factory=LegacyResourcesConfig
+    )
     runtime: VLLMRuntimeConfig = Field(default_factory=VLLMRuntimeConfig)
 
     @model_validator(mode="after")
-    def _validate_model_source(self) -> ModelConfig:
+    def _validate_model_source(self) -> LegacyModelConfig:
         """Exactly one of model or repo must be set in runtime config."""
         has_model = self.runtime.model is not None
         has_repo = self.runtime.repo is not None
@@ -148,12 +372,12 @@ class ModelConfig(BaseModel):
         return self
 
 
-class RuntimeDefaults(BaseModel):
-    """Per-engine defaults that cascade to all models of a given backend.
+class LegacyRuntimeDefaults(BaseModel):
+    """Per-engine defaults that cascade to all models of a given backend (SEP-001).
 
     Uses ``extra = "allow"`` so any key (backend name) becomes an attribute.
     Each value is a ``dict[str, Any]`` merged with per-model runtime config
-    by the loader (T1.3).
+    by the loader.
 
     Example:
         runtime_defaults:
@@ -171,13 +395,29 @@ class RuntimeDefaults(BaseModel):
         return dict(extra.get(backend) or {})
 
 
-class Config(BaseModel):
-    """Top-level YAML configuration.
+class LegacyConfig(BaseModel):
+    """Top-level YAML configuration (SEP-001).
 
     Three-level cascade:
       global -> runtime_defaults.{backend} -> models.{name}.runtime
     """
 
-    global_config: GlobalConfig = Field(default_factory=GlobalConfig, alias="global")
-    runtime_defaults: RuntimeDefaults = Field(default_factory=RuntimeDefaults)
-    models: dict[str, ModelConfig] = Field(default_factory=dict)
+    global_config: LegacyGlobalConfig = Field(
+        default_factory=LegacyGlobalConfig, alias="global"
+    )
+    runtime_defaults: LegacyRuntimeDefaults = Field(
+        default_factory=LegacyRuntimeDefaults
+    )
+    models: dict[str, LegacyModelConfig] = Field(default_factory=dict)
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        # Validation happens automatically via @model_validator on each
+        # LegacyModelConfig. No explicit loop needed.
+
+
+# Backward-compatibility aliases (remove in Phase 3)
+GlobalConfig = LegacyGlobalConfig
+ResourcesConfig = LegacyResourcesConfig
+ControlConfig = LegacyControlConfig
+RuntimeDefaults = LegacyRuntimeDefaults

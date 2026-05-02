@@ -18,7 +18,12 @@ import asyncio
 import pytest
 import pytest_asyncio
 
-from switchyard.config.models import ModelConfig, VLLMRuntimeConfig
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
+    VLLMRuntimeConfig,
+)
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.lifecycle import LifecycleManager
 from switchyard.core.ports import PortAllocator

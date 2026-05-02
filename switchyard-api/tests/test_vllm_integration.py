@@ -16,7 +16,9 @@ import pytest
 
 from switchyard.adapters.vllm import VLLMAdapter
 from switchyard.config.models import (
-    ModelConfig,
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
     VLLMRuntimeConfig,
 )
 from switchyard.core.adapter import DeploymentInfo

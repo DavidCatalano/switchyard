@@ -13,7 +13,13 @@ import pytest
 from fastapi.testclient import TestClient
 
 from switchyard.app import create_app
-from switchyard.config.models import Config, GlobalConfig, RuntimeDefaults
+from switchyard.config.models import (
+    GlobalConfig,
+    RuntimeDefaults,
+)
+from switchyard.config.models import (
+    LegacyConfig as Config,
+)
 
 
 def _mock_deployment(status: str = "running", port: int = 8000) -> SimpleNamespace:

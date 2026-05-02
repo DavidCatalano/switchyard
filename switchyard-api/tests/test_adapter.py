@@ -14,7 +14,12 @@ from datetime import UTC, datetime
 
 import pytest
 
-from switchyard.config.models import ModelConfig, VLLMRuntimeConfig
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
+from switchyard.config.models import (
+    VLLMRuntimeConfig,
+)
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 
 

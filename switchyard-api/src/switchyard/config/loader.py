@@ -13,7 +13,7 @@ from typing import Any
 
 from pydantic_settings import BaseSettings
 
-from switchyard.config.models import Config, VLLMRuntimeConfig
+from switchyard.config.models import LegacyConfig, VLLMRuntimeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +66,7 @@ def _deep_merge(
     return merged
 
 
-def _resolve_cascade(config: Config) -> Config:
+def _resolve_cascade(config: LegacyConfig) -> LegacyConfig:
     """Apply the three-level cascade to each model's runtime config.
 
     For each model:
@@ -107,7 +107,7 @@ class ConfigLoader:
     """
 
     @classmethod
-    def load(cls, path: Path | str | None = None) -> Config:
+    def load(cls, path: Path | str | None = None) -> LegacyConfig:
         """Load config from YAML file.
 
         ``path`` can be omitted if ``SWITCHYARD_CONFIG_PATH`` is set.
@@ -157,12 +157,12 @@ class ConfigLoader:
         return data
 
     @staticmethod
-    def _validate(raw: dict[str, Any]) -> Config:
+    def _validate(raw: dict[str, Any]) -> LegacyConfig:
         """Validate raw dict against Pydantic models."""
-        return Config.model_validate(raw)
+        return LegacyConfig.model_validate(raw)
 
     @staticmethod
-    def _apply_env_overrides(config: Config) -> Config:
+    def _apply_env_overrides(config: LegacyConfig) -> LegacyConfig:
         """Apply environment variable overrides to global config."""
         settings = AppSettings()
         if settings.base_port is not None:

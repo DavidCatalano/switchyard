@@ -2,7 +2,7 @@
 
 **Title**: Config Data Model Refactor
 **ID**: SEP-002-02-PLAN-config-data-model
-**Status**: Draft
+**Status**: Agreed
 **Date**: 2026-04-30
 **PRD**: `SEP-002-01-PRD-config-data-model.md`
 **ADR(s)**: None
@@ -40,13 +40,13 @@ deployments:
 **Goal**: New typed models for hosts, runtimes, models, and deployments replace the old `GlobalConfig`, `RuntimeDefaults`, and `ModelConfig` classes.
 
 #### Tasks
-- [ ] **T1.1**: Define `HostConfig` — Docker connectivity (`docker_network`, `backend_host`, `backend_scheme`, `docker_host`), port range, named stores (model path + HF cache with host/container path + mode), accelerator inventory (id, type, vram), container defaults (environment dict, options dict). `docker_host` is the canonical managed definition; `.env` `SWITCHYARD_DOCKER_HOST` may override it for the active process.
-- [ ] **T1.2**: Define `RuntimeConfig` — backend name, container image, CLI flag defaults dict (backend-specific, open schema), container defaults (internal port)
-- [ ] **T1.3**: Define `ModelConfig` — source (store reference + path within store), model-family defaults (served_model_name, reasoning_parser, tool_call_parser, capabilities), model-specific runtime defaults
-- [ ] **T1.4**: Define `DeploymentConfig` — references to model/runtime/host by name, runtime overrides dict, storage overrides (alternative path within store), `placement.accelerator_ids` for GPU selection, container overrides (environment, options), `extra_args` escape hatch
-- [ ] **T1.5**: Define top-level `Config` model with `hosts: dict[str, HostConfig]`, `runtimes: dict[str, RuntimeConfig]`, `models: dict[str, ModelConfig]`, `deployments: dict[str, DeploymentConfig]`
-- [ ] **T1.6**: Define `AppSettings` (pydantic-settings) for `.env` bootstrap: `config_path`, `log_level`, `api_host`, `api_port`, `active_host`, `docker_host`. `.env` `docker_host` overrides the host's canonical `docker_host` for the active process.
-- [ ] **T1.7**: Tests: each entity model validates with valid data, rejects missing required fields, enforces constraints
+- [x] **T1.1**: Define `HostConfig` — Docker connectivity (`docker_network`, `backend_host`, `backend_scheme`, `docker_host`), port range, named stores (model path + HF cache with host/container path + mode), accelerator inventory (id, type, vram), container defaults (environment dict, options dict). `docker_host` is the canonical managed definition; `.env` `SWITCHYARD_DOCKER_HOST` may override it for the active process.
+- [x] **T1.2**: Define `RuntimeConfig` — backend name, container image, CLI flag defaults dict (backend-specific, open schema), container defaults (internal port)
+- [x] **T1.3**: Define `ModelConfig` — source (store reference + path within store), model-family defaults (served_model_name, reasoning_parser, tool_call_parser, capabilities), model-specific runtime defaults
+- [x] **T1.4**: Define `DeploymentConfig` — references to model/runtime/host by name, runtime overrides dict, storage overrides (alternative path within store), `placement.accelerator_ids` for GPU selection, container overrides (environment, options), `extra_args` escape hatch
+- [x] **T1.5**: Define top-level `Config` model with `hosts: dict[str, HostConfig]`, `runtimes: dict[str, RuntimeConfig]`, `models: dict[str, ModelConfig]`, `deployments: dict[str, DeploymentConfig]`
+- [x] **T1.6**: Define `AppSettings` (pydantic-settings) for `.env` bootstrap: `config_path`, `log_level`, `api_host`, `api_port`, `active_host`, `docker_host`. `.env` `docker_host` overrides the host's canonical `docker_host` for the active process.
+- [x] **T1.7**: Tests: each entity model validates with valid data, rejects missing required fields, enforces constraints
 
 ### Phase 2: Config Loader and Reference Resolution
 

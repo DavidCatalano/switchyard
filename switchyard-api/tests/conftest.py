@@ -11,8 +11,12 @@ import pytest
 def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
     """Isolate tests from the actual .env file by patching AppSettings.
 
-    Tests that need real env var resolution (those setting SWITCHYARD_* in
-    os.environ) skip isolation via the ``no_isolate`` marker.
+    Patches both:
+    - switchyard.config.loader.AppSettings (legacy SEP-001)
+    - switchyard.config.models.AppSettings (SEP-002 entity model)
+
+    Tests that need real env var resolution skip isolation via the
+    ``no_isolate`` marker.
     """
     has_marker = any(
         mark.name == "no_isolate"
@@ -22,8 +26,8 @@ def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
         yield
         return
 
-    mock_settings = MagicMock()
-    for attr in (
+    # Legacy AppSettings (loader.py)
+    legacy_attrs = (
         "config_path",
         "base_port",
         "log_level",
@@ -33,8 +37,29 @@ def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
         "docker_network",
         "health_interval_seconds",
         "health_timeout_seconds",
-    ):
-        setattr(mock_settings, attr, None)
+    )
+    legacy_mock = MagicMock()
+    for attr in legacy_attrs:
+        setattr(legacy_mock, attr, None)
 
-    with patch("switchyard.config.loader.AppSettings", return_value=mock_settings):
+    # SEP-002 AppSettings (models.py)
+    new_attrs = (
+        "config_path",
+        "log_level",
+        "api_host",
+        "api_port",
+        "active_host",
+        "docker_host",
+    )
+    new_mock = MagicMock()
+    for attr in new_attrs:
+        setattr(new_mock, attr, None)
+
+    with patch(
+        "switchyard.config.loader.AppSettings", return_value=legacy_mock,
+    ), patch(
+        "switchyard.config.models.AppSettings", return_value=new_mock,
+    ), patch(
+        "tests.test_entity_models.AppSettings", return_value=new_mock,
+    ):
         yield

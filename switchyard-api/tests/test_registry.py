@@ -12,7 +12,9 @@ from __future__ import annotations
 
 import pytest
 
-from switchyard.config.models import ModelConfig
+from switchyard.config.models import (
+    LegacyModelConfig as ModelConfig,
+)
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.registry import AdapterRegistry
 

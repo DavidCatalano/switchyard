@@ -9,24 +9,16 @@
 
 ## Entries
 
-- 2026-05-01 — PRD, CONSULT, and PLAN are drafted for the entity-based config
-  refactor. Implementation has not started; use the PLAN checklist as the source
-  of task progress.
+- 2026-05-02 — Phase 1 complete. Entity models, constraint validators, and
+  negative tests are in place; 260 tests pass, 4 skipped, ruff/mypy clean.
 
 ---
 
 ## Cold Start / Handoff
 
-Read `SEP-002-01-PRD-config-data-model.md`, then
-`SEP-002-02-PLAN-config-data-model.md`. Use
-`SEP-002-04-CONSULT-host-environment-config.md` only for rationale and concrete
-schema examples; the PLAN is the implementation source of truth. Before coding,
-inspect `switchyard-api/src/switchyard/config/` and relevant tests directly.
+Read `SEP-002-02-PLAN-config-data-model.md`; Phase 2 is next. Use
+`switchyard-api/src/switchyard/config/models.py` and
+`switchyard-api/tests/test_entity_models.py` for the Phase 1 baseline.
 
-Carry forward: top-level entity name is `deployments`, not `placements`; if the
-PRD still shows `placements` in an example, treat that as stale. SEP-002 owns the
-config model and resolved deployment object only. Do not wire deployment
-lifecycle behavior into adapters/routes; that belongs to SEP-003. Preserve
-SEP-001 vLLM typed field validation and ensure Switchyard-internal fields such
-as `placement`, `accelerator_ids`, `stores`, and `docker_host` are not emitted as
-runtime CLI args.
+Carry forward: the PRD still has a stale `placements` example; the top-level
+entity is `deployments`.
