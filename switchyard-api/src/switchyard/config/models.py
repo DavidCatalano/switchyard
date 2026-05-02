@@ -347,32 +347,22 @@ class AppSettings(BaseSettings):
     Answers: "how does this Switchyard process start on this machine?"
     Owned by .env, not config.yaml.
 
-    Fields from both SEP-001 (legacy loader) and SEP-002 (entity loader)
-    are present here for backward compatibility during transition.
+    Typos or stale variables in .env fail loudly at startup.
     """
 
     model_config = {
         "env_prefix": "SWITCHYARD_",
         "env_file": ".env",
         "env_file_encoding": "utf-8",
-        "extra": "ignore",
+        "extra": "forbid",
     }
 
-    config_path: str | None = None
-    log_level: str | None = None
-    api_host: str | None = None
-    api_port: int | None = None
+    config_path: str = "config.yaml"
+    log_level: str = "info"
+    api_host: str = "0.0.0.0"
+    api_port: int = 8000
     active_host: str | None = None
     docker_host: str | None = None
-
-    # Legacy SEP-001 fields (to be removed in Phase 3)
-    base_port: int | None = None
-    docker_network: str | None = None
-    backend_host: str | None = None
-    backend_scheme: str | None = None
-    health_interval_seconds: float | None = None
-    health_timeout_seconds: float | None = None
-
 
 class VLLMRuntimeConfig(BaseModel):
     """Typed vLLM runtime configuration.

@@ -11,7 +11,7 @@ import pytest
 def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
     """Isolate tests from the actual .env file by patching AppSettings.
 
-    Patches both:
+    Patches:
     - switchyard.config.loader.AppSettings (legacy SEP-001)
     - switchyard.config.models.AppSettings (SEP-002 entity model)
 
@@ -29,12 +29,12 @@ def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
     # Legacy AppSettings (loader.py)
     legacy_attrs = (
         "config_path",
-        "base_port",
         "log_level",
         "docker_host",
         "backend_host",
         "backend_scheme",
         "docker_network",
+        "base_port",
         "health_interval_seconds",
         "health_timeout_seconds",
     )

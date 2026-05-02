@@ -12,12 +12,15 @@ ENV_FILE   := $(API_DIR)/.env
 _env_backend  := $(shell grep -s '^SWITCHYARD_BACKEND_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 _env_docker   := $(shell grep -s '^SWITCHYARD_DOCKER_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 _env_network  := $(shell grep -s '^SWITCHYARD_DOCKER_NETWORK=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
+_env_api_host := $(shell grep -s '^SWITCHYARD_API_HOST=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
+_env_api_port := $(shell grep -s '^SWITCHYARD_API_PORT=' $(ENV_FILE) | cut -d= -f2- | tr -d '[:space:]')
 
 # Command-line ?= takes precedence over .env-sourced values
 SSH_HOST       ?= $(or $(_env_backend),localhost)
 DOCKER_HOST    ?= $(or $(_env_docker),tcp://127.0.0.1:2375)
 DOCKER_NETWORK ?= $(or $(_env_network),model-runtime)
-API_PORT       ?= 8000
+API_HOST       ?= $(or $(_env_api_host),0.0.0.0)
+API_PORT       ?= $(or $(_env_api_port),8000)
 
 # Export for child processes (docker SDK, Makefile targets)
 export DOCKER_HOST
@@ -36,8 +39,8 @@ tunnel:
 # Development Server
 # -------------------------------------------------------------------
 dev:
-	@echo "🚀 Switchyard control plane (http://localhost:$(API_PORT))"
-	cd $(API_DIR) && uv run uvicorn switchyard.app:create_app --factory --host 0.0.0.0 --port $(API_PORT)
+	@echo "🚀 Switchyard control plane (http://$(API_HOST):$(API_PORT))"
+	cd $(API_DIR) && uv run uvicorn switchyard.app:create_app --factory --host $(API_HOST) --port $(API_PORT)
 
 # -------------------------------------------------------------------
 # Testing & Quality
@@ -50,6 +53,9 @@ lint:
 
 typecheck:
 	cd $(API_DIR) && uv run mypy src
+
+quality: lint typecheck test
+	@echo "✅ All quality gates passed"
 
 # -------------------------------------------------------------------
 # Deployment Smoke Targets
@@ -119,6 +125,7 @@ help:
 	@echo "  DOCKER_PORT=$(DOCKER_PORT)  - Local port for SSH tunnel"
 	@echo "  DOCKER_HOST=$(DOCKER_HOST)  - Docker SDK endpoint"
 	@echo "  DOCKER_NETWORK=$(DOCKER_NETWORK) - Container network"
+	@echo "  API_HOST=$(API_HOST)        - FastAPI server bind address"
 	@echo "  API_PORT=$(API_PORT)        - FastAPI server port"
 	@echo ""
 	@echo "Quick start (two terminals):"
