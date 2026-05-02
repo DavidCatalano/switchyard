@@ -235,12 +235,20 @@ def _register_routes(app: FastAPI) -> None:
         deployment_name = body.get("model", "")
         deployment = _get_running_deployment(deployment_name, manager)
         backend_url = _backend_url(deployment, config)
+        backend_body = dict(body)
+        backend_body["model"] = deployment.metadata.get(
+            "served_model_name", deployment_name
+        )
 
         streaming = body.get("stream", False)
 
         if streaming:
-            return _streaming_proxy(backend_url + "/v1/chat/completions", body)
-        return _blocking_proxy(backend_url + "/v1/chat/completions", body)
+            return _streaming_proxy(
+                backend_url + "/v1/chat/completions", backend_body
+            )
+        return _blocking_proxy(
+            backend_url + "/v1/chat/completions", backend_body
+        )
 
     @app.post("/v1/backends/{deployment}/{path:path}")
     async def backend_passthrough(

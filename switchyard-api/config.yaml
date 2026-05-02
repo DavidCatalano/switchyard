@@ -3,7 +3,7 @@ hosts:
     backend_host: trainbox
     docker_host: tcp://127.0.0.1:2375
     docker_network: ai_net
-    port_range: [7113, 7213]
+    port_range: [18000, 18100]
     accelerators:
       - id: "0"
         type: cuda

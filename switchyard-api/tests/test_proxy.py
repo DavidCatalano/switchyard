@@ -125,6 +125,7 @@ class TestChatCompletionsProxy:
             metadata={
                 "backend_host": "127.0.0.1",
                 "backend_scheme": "http",
+                "served_model_name": "tinyllama-1.1b-chat",
             },
         )
         app.state.manager.state.add(info)
@@ -144,7 +145,7 @@ class TestChatCompletionsProxy:
         call_args = mock_client.post.call_args
         assert call_args.args[0] == "http://127.0.0.1:9001/v1/chat/completions"
         assert call_args.kwargs["json"] == {
-            "model": "test-deployment",
+            "model": "tinyllama-1.1b-chat",
             "messages": [{"role": "user", "content": "Hi"}],
         }
 
@@ -176,6 +177,7 @@ class TestChatCompletionsProxy:
             metadata={
                 "backend_host": "127.0.0.1",
                 "backend_scheme": "http",
+                "served_model_name": "tinyllama-1.1b-chat",
             },
         )
         app.state.manager.state.add(info)
@@ -197,7 +199,7 @@ class TestChatCompletionsProxy:
         assert call_args.args[0] == "POST"
         assert call_args.args[1] == "http://127.0.0.1:9001/v1/chat/completions"
         assert call_args.kwargs["json"] == {
-            "model": "test-deployment",
+            "model": "tinyllama-1.1b-chat",
             "stream": True,
             "messages": [{"role": "user", "content": "Hi"}],
         }

@@ -43,6 +43,28 @@ def _field_to_flag(field_name: str) -> str:
     return "--" + field_name.replace("_", "-")
 
 
+def _normalize_container_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Translate config-shaped container options to Docker SDK kwargs."""
+    normalized = dict(options)
+
+    ipc = normalized.pop("ipc", None)
+    if ipc is not None:
+        normalized["ipc_mode"] = ipc
+
+    ulimits = normalized.get("ulimits")
+    if isinstance(ulimits, dict):
+        normalized["ulimits"] = [
+            docker.types.Ulimit(
+                name=name,
+                soft=limits.get("soft"),
+                hard=limits.get("hard"),
+            )
+            for name, limits in ulimits.items()
+        ]
+
+    return normalized
+
+
 class VLLMAdapter(BackendAdapter):
     """Concrete adapter for vLLM backend containers.
 
@@ -191,8 +213,10 @@ class VLLMAdapter(BackendAdapter):
         if environment:
             kwargs["environment"] = environment
 
-        # Merge container options (ipc, ulimits, etc.) from resolved deployment
-        for opt_key, opt_value in resolved.container_options.items():
+        # Merge container options after translating config keys to Docker SDK kwargs.
+        for opt_key, opt_value in _normalize_container_options(
+            resolved.container_options
+        ).items():
             if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
                 kwargs[opt_key].update(opt_value)
             else:
@@ -263,6 +287,12 @@ class VLLMAdapter(BackendAdapter):
             metadata={
                 "backend_host": self._backend_host,
                 "backend_scheme": self._backend_scheme,
+                "served_model_name": (
+                    runtime.served_model_name
+                    or runtime.model
+                    or runtime.repo
+                    or resolved.deployment_name
+                ),
             },
         )
 

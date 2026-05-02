@@ -156,7 +156,10 @@ class TestVLLMAdapter:
             accelerator_ids=["0", "1"],
             docker_host="unix:///var/run/docker.sock",
             docker_network="model-runtime",
-            runtime_args={"model": "/models/test"},
+            runtime_args={
+                "model": "/models/test",
+                "served_model_name": "tinyllama-1.1b-chat",
+            },
             container_environment={"CUDA_VISIBLE_DEVICES": "0,1"},
             container_options={"mem_limit": "32g"},
             store_mounts={
@@ -177,6 +180,7 @@ class TestVLLMAdapter:
 
         assert info.container_id == "abc123"
         assert info.port == 9001
+        assert info.metadata["served_model_name"] == "tinyllama-1.1b-chat"
 
         # Verify containers.run was called with correct kwargs
         call_kwargs = mock_containers.run.call_args.kwargs
@@ -207,6 +211,51 @@ class TestVLLMAdapter:
         assert "0.0.0.0" in command
         assert "--port" in command
         assert "8000" in command
+
+    def test_start_normalizes_container_options(self, adapter: VLLMAdapter) -> None:
+        """Compose-style container options are translated to Docker SDK kwargs."""
+        resolved = ResolvedDeployment(
+            deployment_name="cpu-test",
+            model_name="test-model",
+            runtime_name="vllm-cpu",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai-cpu:latest-x86_64",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=[],
+            docker_host=None,
+            docker_network="model-runtime",
+            runtime_args={"model": "/models/test", "device": "cpu"},
+            container_environment={},
+            container_options={
+                "ipc": "host",
+                "ulimits": {"memlock": {"soft": -1, "hard": -1}},
+            },
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "cpu123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        adapter.start(resolved, 9003)
+
+        call_kwargs = mock_containers.run.call_args.kwargs
+        assert "ipc" not in call_kwargs
+        assert call_kwargs["ipc_mode"] == "host"
+        assert len(call_kwargs["ulimits"]) == 1
+        assert call_kwargs["ulimits"][0]["Name"] == "memlock"
+        assert call_kwargs["ulimits"][0]["Soft"] == -1
+        assert call_kwargs["ulimits"][0]["Hard"] == -1
 
     def test_start_uses_docker_host_from_resolved(self, adapter: VLLMAdapter) -> None:
         """start() creates Docker client with resolved.docker_host when not injected.
