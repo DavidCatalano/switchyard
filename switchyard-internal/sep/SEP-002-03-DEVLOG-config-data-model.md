@@ -11,6 +11,11 @@
 
 - 2026-05-02 — Phase 1 complete. Entity models, constraint validators, and
   negative tests are in place; 260 tests pass, 4 skipped, ruff/mypy clean.
+- 2026-05-02 — Phase 2 complete (T2.1–T2.8). Added `ResolvedDeployment` dataclass,
+  `ConfigLoader.load_entity_config()`, and `resolve_deployment()` with full
+  reference resolution, store path resolution, runtime cascade merge,
+  container cascade merge, and .env docker_host override. 18 resolution tests.
+  289 tests pass, ruff/mypy clean.
 
 ---
 

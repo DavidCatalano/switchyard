@@ -53,14 +53,14 @@ deployments:
 **Goal**: Loader reads YAML, validates cross-entity references, resolves store paths to host paths, and produces a configuration data object.
 
 #### Tasks
-- [ ] **T2.1**: Implement YAML loader that parses `config.yaml` into the `Config` model (replace current loader)
-- [ ] **T2.2**: Implement reference resolution — given a deployment, resolve `model: qwen3-27b-fp8` → `ModelConfig`, `runtime: vllm` → `RuntimeConfig`, `host: trainbox` → `HostConfig`
-- [ ] **T2.3**: Implement store resolution — resolve `source.store: models` against host's `stores.models` to produce two outputs: the host path (for Docker volume mounting) and the container path (passed to the runtime as the model location)
-- [ ] **T2.4**: Implement cascade merge for runtime config: runtime defaults → model runtime defaults → deployment runtime overrides → `extra_args`
-- [ ] **T2.5**: Implement cascade merge for container config: host container defaults → deployment container overrides
-- [ ] **T2.6**: Produce `ResolvedDeployment` dataclass — the complete resolved configuration for a single deployment (all references resolved, paths computed, cascades merged)
-- [ ] **T2.7**: Tests: reference validation (valid references resolve, unknown model/runtime/host raises error), store resolution (named store produces both host path and container path), cascade merge (overrides take precedence at each layer, defaults fill gaps, merge order verified: runtime → model → deployment → extra_args), `.env` `SWITCHYARD_DOCKER_HOST` overrides `hosts.*.docker_host` for the active process
-- [ ] **T2.8**: Tests: deployment naming fixture — `qwen3-27b-vllm-trainbox` resolves cleanly with realistic data (all entity references, store resolution, cascade merge)
+- [x] **T2.1**: Implement YAML loader that parses `config.yaml` into the `Config` model (replace current loader)
+- [x] **T2.2**: Implement reference resolution — given a deployment, resolve `model: qwen3-27b-fp8` → `ModelConfig`, `runtime: vllm` → `RuntimeConfig`, `host: trainbox` → `HostConfig`
+- [x] **T2.3**: Implement store resolution — resolve `source.store: models` against host's `stores.models` to produce two outputs: the host path (for Docker volume mounting) and the container path (passed to the runtime as the model location)
+- [x] **T2.4**: Implement cascade merge for runtime config: runtime defaults → model runtime defaults → deployment runtime overrides → `extra_args`
+- [x] **T2.5**: Implement cascade merge for container config: host container defaults → deployment container overrides
+- [x] **T2.6**: Produce `ResolvedDeployment` dataclass — the complete resolved configuration for a single deployment (all references resolved, paths computed, cascades merged)
+- [x] **T2.7**: Tests: reference validation (valid references resolve, unknown model/runtime/host raises error), store resolution (named store produces both host path and container path), cascade merge (overrides take precedence at each layer, defaults fill gaps, merge order verified: runtime → model → deployment → extra_args), `.env` `SWITCHYARD_DOCKER_HOST` overrides `hosts.*.docker_host` for the active process
+- [x] **T2.8**: Tests: deployment naming fixture — `qwen3-27b-vllm-trainbox` resolves cleanly with realistic data (all entity references, store resolution, cascade merge)
 
 ### Phase 3: Remove Legacy Schema and Update Code
 

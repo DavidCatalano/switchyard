@@ -1,7 +1,10 @@
-"""Config loader — YAML parsing, env var overrides, and three-level cascade.
+"""Config loader — YAML parsing, env var overrides, and resolution.
 
-Loads YAML via ``model_validate`` and resolves the three-level cascade:
+Legacy SEP-001 loader:
   runtime_defaults.{backend} -> per-model runtime -> extra_args passthrough
+
+SEP-002 entity-based loader:
+  hosts, runtimes, models, deployments -> ResolvedDeployment
 """
 
 from __future__ import annotations
@@ -13,7 +16,16 @@ from typing import Any
 
 from pydantic_settings import BaseSettings
 
-from switchyard.config.models import LegacyConfig, VLLMRuntimeConfig
+from switchyard.config.models import (
+    Config,
+    DeploymentConfig,
+    HostConfig,
+    LegacyConfig,
+    ModelConfig,
+    ResolvedDeployment,
+    RuntimeConfig,
+    VLLMRuntimeConfig,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -176,3 +188,203 @@ class ConfigLoader:
         if settings.backend_scheme is not None:
             config.global_config.backend_scheme = settings.backend_scheme
         return config
+
+    @staticmethod
+    def load_entity_config(path: Path | str) -> Config:
+        """Load entity-based (SEP-002) config from YAML file."""
+        file_path = Path(path)
+        if not file_path.is_file():
+            raise ValueError(f"config file not found: {file_path}")
+
+        raw = ConfigLoader._read_yaml(file_path)
+        config = Config.model_validate(raw)
+
+        logger.info(
+            "loaded entity config from %s: %d host(s), %d runtime(s), "
+            "%d model(s), %d deployment(s)",
+            file_path,
+            len(config.hosts),
+            len(config.runtimes),
+            len(config.models),
+            len(config.deployments),
+        )
+        return config
+
+
+# =====================================================================
+# SEP-002 Entity Config Loader and Resolver
+# =====================================================================
+
+
+def resolve_deployment(
+    config: Config,
+    deployment_name: str,
+    *,
+    # Internal test hooks — bypass lookup for targeted unit tests
+    _model_config: ModelConfig | None = None,
+    _runtime_config: RuntimeConfig | None = None,
+    _host_config: HostConfig | None = None,
+) -> ResolvedDeployment:
+    """Resolve a named deployment into a complete ResolvedDeployment.
+
+    Steps:
+      1. Look up the deployment by name
+      2. Resolve model, runtime, host references
+      3. Resolve store paths (host path + container path)
+      4. Cascade-merge runtime args: runtime defaults → model runtime_defaults
+         → deployment runtime_overrides → deployment extra_args
+      5. Cascade-merge container config: host container_defaults → deployment
+         container_overrides
+      6. Apply .env docker_host override
+      7. Produce ResolvedDeployment
+    """
+    deployment = config.deployments.get(deployment_name)
+    if deployment is None:
+        raise ValueError(
+            f"deployment {deployment_name!r} not found in config"
+        )
+
+    # 1. Resolve references
+    model_cfg = _model_config or config.models.get(deployment.model)
+    if model_cfg is None:
+        raise ValueError(
+            f"deployment {deployment_name!r} references unknown model "
+            f"{deployment.model!r}"
+        )
+
+    runtime_cfg = _runtime_config or config.runtimes.get(deployment.runtime)
+    if runtime_cfg is None:
+        raise ValueError(
+            f"deployment {deployment_name!r} references unknown runtime "
+            f"{deployment.runtime!r}"
+        )
+
+    host_cfg = _host_config or config.hosts.get(deployment.host)
+    if host_cfg is None:
+        raise ValueError(
+            f"deployment {deployment_name!r} references unknown host "
+            f"{deployment.host!r}"
+        )
+
+    # 2. Resolve store paths
+    model_path = _resolve_store_path(
+        host_cfg, deployment, model_cfg,
+    )
+
+    # 3. Cascade-merge runtime args
+    runtime_args = _merge_runtime_args(runtime_cfg, model_cfg, deployment)
+
+    # 4. Cascade-merge container config
+    container_env, container_options = _merge_container_config(
+        host_cfg, deployment,
+    )
+
+    # 5. Determine image
+    image = runtime_cfg.image or f"{runtime_cfg.backend}:latest"
+
+    # 6. Determine docker_host (.env override)
+    docker_host = AppSettings().docker_host
+    if docker_host is None:
+        docker_host = host_cfg.docker_host
+
+    # 7. Determine accelerators
+    accelerator_ids = (
+        deployment.placement.accelerator_ids
+        if deployment.placement
+        else []
+    )
+
+    return ResolvedDeployment(
+        deployment_name=deployment_name,
+        model_name=deployment.model,
+        backend=runtime_cfg.backend,
+        host_name=deployment.host,
+        image=image,
+        internal_port=runtime_cfg.container_defaults.internal_port,
+        model_host_path=model_path.host_path,
+        model_container_path=model_path.container_path,
+        accelerator_ids=accelerator_ids,
+        docker_host=docker_host,
+        docker_network=host_cfg.docker_network,
+        runtime_args=runtime_args,
+        container_environment=container_env,
+        container_options=container_options,
+        model_defaults=model_cfg.defaults,
+    )
+
+
+def _resolve_store_path(
+    host_cfg: HostConfig,
+    deployment: DeploymentConfig,
+    model_cfg: ModelConfig,
+) -> Any:
+    """Resolve store reference to host/container paths.
+
+    Returns a SimpleNamespace with host_path and container_path.
+    """
+    from types import SimpleNamespace
+
+    store_name = model_cfg.source.store
+    store_cfg = host_cfg.stores.get(store_name)
+    if store_cfg is None:
+        raise ValueError(
+            f"store {store_name!r} not found on host {host_cfg.backend_host!r}"
+        )
+
+    # Use storage_overrides.path if provided, else model source path
+    model_path = (
+        deployment.storage_overrides.path
+        if deployment.storage_overrides
+        else model_cfg.source.path
+    )
+
+    return SimpleNamespace(
+        host_path=f"{store_cfg.host_path}/{model_path}",
+        container_path=f"{store_cfg.container_path}/{model_path}",
+    )
+
+
+def _merge_runtime_args(
+    runtime_cfg: RuntimeConfig,
+    model_cfg: ModelConfig,
+    deployment: DeploymentConfig,
+) -> dict[str, Any]:
+    """Merge runtime args in cascade order.
+
+    Order (later wins on conflict):
+      1. Runtime defaults
+      2. Model runtime_defaults
+      3. Deployment runtime_overrides
+      4. Deployment extra_args
+    """
+    merged: dict[str, Any] = {}
+    for layer in (
+        runtime_cfg.defaults,
+        model_cfg.runtime_defaults,
+        deployment.runtime_overrides,
+        deployment.extra_args,
+    ):
+        merged.update(layer)
+    return merged
+
+
+def _merge_container_config(
+    host_cfg: HostConfig,
+    deployment: DeploymentConfig,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Merge container config in cascade order.
+
+    Order (later wins on conflict):
+      1. Host container defaults (environment + options)
+      2. Deployment container overrides (environment + options)
+
+    Returns (environment, options) tuple.
+    """
+    env: dict[str, str] = dict(host_cfg.container_defaults.environment)
+    options: dict[str, Any] = dict(host_cfg.container_defaults.options)
+
+    if deployment.container_overrides:
+        env.update(deployment.container_overrides.environment)
+        options.update(deployment.container_overrides.options)
+
+    return env, options

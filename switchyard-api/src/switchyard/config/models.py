@@ -12,6 +12,7 @@ Pydantic fields; Tier 3+ use the extra_args catch-all.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -207,6 +208,49 @@ class Config(BaseModel):
     runtimes: dict[str, RuntimeConfig] = Field(default_factory=dict)
     models: dict[str, ModelConfig] = Field(default_factory=dict)
     deployments: dict[str, DeploymentConfig] = Field(default_factory=dict)
+
+
+@dataclass
+class ResolvedDeployment:
+    """Fully resolved deployment configuration.
+
+    Produced by resolving a deployment's model, runtime, host, stores,
+    cascaded defaults, and overrides into a single launch-ready object.
+
+    This is a plain dataclass (not Pydantic) to avoid circular dependency
+    with the Pydantic entity models during resolution.
+    """
+
+    # Identity
+    deployment_name: str
+    model_name: str
+    backend: str
+    host_name: str
+
+    # Container
+    image: str
+    internal_port: int
+
+    # Store resolution
+    model_host_path: str
+    model_container_path: str
+
+    # Hardware placement
+    accelerator_ids: list[str]
+
+    # Docker
+    docker_host: str | None
+    docker_network: str
+
+    # Cascade-merged runtime config
+    runtime_args: dict[str, Any]
+
+    # Cascade-merged container config
+    container_environment: dict[str, str]
+    container_options: dict[str, Any]
+
+    # Model defaults (portable)
+    model_defaults: dict[str, Any] | None
 
 
 class AppSettings(BaseSettings):
