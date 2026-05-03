@@ -18,7 +18,7 @@ from pydantic import ValidationError
 from switchyard.config.models import AppSettings
 
 
-def _clear_switchyard_env() -> list[str]:
+def _clear_switchyard_env() -> dict[str, str]:
     """Remove all SWITCHYARD_* env vars and return originals for restore."""
     saved = {k: v for k, v in os.environ.items() if k.startswith("SWITCHYARD_")}
     for k in saved:
@@ -26,8 +26,17 @@ def _clear_switchyard_env() -> list[str]:
     return saved
 
 
-def _restore_switchyard_env(saved: list[str]) -> None:
+def _restore_switchyard_env(saved: dict[str, str]) -> None:
     os.environ.update(saved)
+
+
+def _load_settings(env_file: pathlib.Path) -> AppSettings:
+    """Load AppSettings from an isolated .env file.
+
+    _env_file is an internal pydantic-settings keyword not in the type stub,
+    so we silence the mypy warning.
+    """
+    return AppSettings(_env_file=str(env_file))  # type: ignore[call-arg]
 
 
 class TestAppSettingsDefaults:
@@ -39,7 +48,7 @@ class TestAppSettingsDefaults:
         env_file.write_text("# empty\n")
         saved = _clear_switchyard_env()
         try:
-            settings = AppSettings(_env_file=str(env_file))
+            settings = _load_settings(env_file)
             assert settings.config_path == "config.yaml"
             assert settings.log_level == "info"
             assert settings.api_host == "0.0.0.0"
@@ -63,7 +72,7 @@ class TestAppSettingsUnknownKeysFail:
         saved = _clear_switchyard_env()
         try:
             with pytest.raises(ValidationError, match="unknown_key"):
-                AppSettings(_env_file=str(env_file))
+                _load_settings(env_file)
         finally:
             _restore_switchyard_env(saved)
 
@@ -81,7 +90,7 @@ class TestAppSettingsUnknownKeysFail:
         saved = _clear_switchyard_env()
         try:
             with pytest.raises(ValidationError, match="stale_var"):
-                AppSettings(_env_file=str(env_file))
+                _load_settings(env_file)
         finally:
             _restore_switchyard_env(saved)
 
@@ -102,7 +111,7 @@ class TestAppSettingsValidKeys:
         )
         saved = _clear_switchyard_env()
         try:
-            settings = AppSettings(_env_file=str(env_file))
+            settings = _load_settings(env_file)
             assert settings.config_path == "config.yaml"
             assert settings.log_level == "debug"
             assert settings.api_host == "127.0.0.1"
