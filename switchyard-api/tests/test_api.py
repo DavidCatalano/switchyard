@@ -11,6 +11,7 @@ Validates:
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -126,6 +127,88 @@ class TestDeploymentRoutes:
         # Verify the manager's state was updated
         info = app.state.manager.state.get("test-deployment")
         assert info.status in ("loading", "running")
+
+    def test_load_deployment_start_failure_returns_500(self) -> None:
+        """T5.2: adapter.start() RuntimeError returns structured 500 JSON."""
+        from switchyard.core.adapter import BackendAdapter
+
+        class FailingAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN001
+                pass
+
+            def start(
+                self, resolved, port: int,  # noqa: ANN001
+            ):
+                raise RuntimeError("docker refused the container")
+
+            def stop(self, deployment) -> None:  # noqa: ANN001
+                pass
+
+            def health(self, deployment) -> str:  # noqa: ANN001
+                return "error"
+
+            def endpoint(self, deployment) -> str:  # noqa: ANN001
+                return ""
+
+        app = create_app()
+        registry = app.state.manager.registry
+        registry.register("vllm", FailingAdapter)
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/deployments/load",
+            json={"deployment": "test-deployment"},
+        )
+
+        assert response.status_code == 500
+        data = response.json()
+        assert "detail" in data
+        assert "docker refused the container" in data["detail"]
+        # Deployment should NOT be in state
+        with pytest.raises(KeyError):
+            app.state.manager.state.get("test-deployment")
+
+    def test_load_deployment_non_runtime_error_surfaces(self) -> None:
+        """T5.2 boundary: non-RuntimeError exceptions are not the structured 500.
+
+        Programming mistakes, config errors, and unrelated bugs should surface
+        as real server errors, not as the structured 'failed to start deployment'
+        response.
+        """
+        from switchyard.core.adapter import BackendAdapter
+
+        class BugAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN001
+                pass
+
+            def start(
+                self, resolved, port: int,  # noqa: ANN001
+            ):
+                raise TypeError("internal bug")  # not a RuntimeError
+
+            def stop(self, deployment) -> None:  # noqa: ANN001
+                pass
+
+            def health(self, deployment) -> str:  # noqa: ANN001
+                return "error"
+
+            def endpoint(self, deployment) -> str:  # noqa: ANN001
+                return ""
+
+        app = create_app()
+        registry = app.state.manager.registry
+        registry.register("vllm", BugAdapter)
+
+        # TypeError is not RuntimeError, so the route does NOT convert it
+        # to the structured 500 "failed to start deployment" response.
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/deployments/load",
+            json={"deployment": "test-deployment"},
+        )
+
+        # Still 500 (server error) but the structured startup message must NOT appear
+        assert response.status_code == 500
+        body = response.text
+        assert "failed to start deployment" not in body
 
     def test_unload_deployment_unknown(self) -> None:
         """Unloading an unknown deployment raises 404."""

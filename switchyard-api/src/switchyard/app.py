@@ -173,6 +173,11 @@ def _register_routes(app: FastAPI) -> None:
             info = await manager.load_model(deployment_name, resolved)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+        except RuntimeError as exc:
+            raise HTTPException(
+                status_code=500,
+                detail=f"failed to start deployment {deployment_name!r}: {exc}",
+            )
 
         return {
             "deployment_name": info.model_name,

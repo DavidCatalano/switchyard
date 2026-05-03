@@ -36,6 +36,10 @@
 - 2026-05-02 — Streaming proxy setup errors now return 503/504 before response
   start; added streaming connect/timeout tests. 221 tests pass, 3 skipped,
   ruff/mypy clean.
+- 2026-05-02 — T5.1+T5.2 done. Review narrowed the `POST /deployments/load`
+  catch from broad `Exception` to `RuntimeError` per adapter contract; boundary
+  test added so non-RuntimeError bugs surface as real server errors. 231 passed,
+  1 skipped, gates clean.
 
 ---
 

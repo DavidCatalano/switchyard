@@ -166,6 +166,48 @@ class TestLoadModel:
         with pytest.raises(KeyError, match="unknown backend"):
             await manager.load_model("bad-deployment", resolved)
 
+    async def test_load_releases_port_on_start_failure(
+        self, manager: LifecycleManager,
+    ) -> None:
+        """T5.1: port is released when adapter.start() raises."""
+        # Use a mock adapter class that fails on start
+        class FailingAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
+                raise RuntimeError("container launch failed")
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "error"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("failing", FailingAdapter)
+        port_allocator = PortAllocator(base_port=9600)
+        failing_mgr = LifecycleManager(
+            registry=registry,
+            port_allocator=port_allocator,
+        )
+        resolved = _make_resolved(
+            backend="failing", deployment_name="failing-deployment"
+        )
+        with pytest.raises(RuntimeError, match="container launch failed"):
+            await failing_mgr.load_model("failing-deployment", resolved)
+
+        # Port must be released even though start failed
+        assert 9600 not in failing_mgr.port_allocator.allocated
+        # Deployment must not be in state
+        with pytest.raises(KeyError):
+            failing_mgr.state.get("failing-deployment")
+
 
 class TestHealthCheck:
     """Background health check tests."""

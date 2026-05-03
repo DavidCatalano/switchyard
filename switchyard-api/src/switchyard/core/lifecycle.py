@@ -103,8 +103,16 @@ class LifecycleManager:
         # Allocate port
         port = self.port_allocator.allocate()
 
-        # Start container via adapter
-        deployment = adapter.start(resolved, port)
+        # Start container via adapter (may raise)
+        try:
+            deployment = adapter.start(resolved, port)
+        except Exception:
+            logger.warning(
+                "adapter.start() failed for deployment %s, releasing port %d",
+                deployment_name, port, exc_info=True,
+            )
+            self.port_allocator.release(port)
+            raise
 
         # Record in state as "loading"
         loading_info = DeploymentInfo(
