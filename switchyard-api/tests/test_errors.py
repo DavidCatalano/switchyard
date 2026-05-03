@@ -79,12 +79,12 @@ class TestProxyErrors:
         )
         assert resp.status_code == 404
 
-    def test_backends_passthrough_unknown_deployment(self) -> None:
+    def test_proxy_passthrough_unknown_deployment(self) -> None:
         """Returns 404 for deployment name not in state."""
         app = create_app()
         # Real manager's state is empty -> 404
         client = TestClient(app)
-        resp = client.post("/v1/backends/nonexistent/models", json={})
+        resp = client.post("/api/proxy/nonexistent/v1/models", json={})
         assert resp.status_code == 404
 
     def test_chat_completions_upstream_timeout(self) -> None:
@@ -118,8 +118,8 @@ class TestProxyErrors:
             )
         assert resp.status_code == 504
 
-    def test_backends_passthrough_upstream_error(self) -> None:
-        """Returns backend error code for backend passthrough."""
+    def test_proxy_passthrough_upstream_error(self) -> None:
+        """Returns backend error code for proxy passthrough."""
         from switchyard.core.adapter import DeploymentInfo
 
         mock_response = MagicMock()
@@ -147,7 +147,7 @@ class TestProxyErrors:
         with patch("switchyard.app.httpx.Client", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
-                "/v1/backends/test-deployment/models",
+                "/api/proxy/test-deployment/models",
                 json={},
             )
         assert resp.status_code == 429

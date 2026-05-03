@@ -152,31 +152,107 @@ def _register_routes(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "ok"}
 
-    @app.post("/deployments/load", status_code=202)
-    async def load_deployment(body: LoadModelRequest) -> dict[str, Any]:
+    # ── /api/ deployment lifecycle routes ──────────────────────────
+
+    @app.get("/api/deployments")
+    async def list_deployments() -> list[dict[str, Any]]:
+        """List all configured deployments with current status."""
+        results: list[dict[str, Any]] = []
+        for dep_name, dep_cfg in config.deployments.items():
+            try:
+                info = manager.state.get(dep_name)
+                status = info.status
+            except KeyError:
+                status = "stopped"
+            results.append({
+                "deployment_name": dep_name,
+                "model": dep_cfg.model,
+                "runtime": dep_cfg.runtime,
+                "host": dep_cfg.host,
+                "status": status,
+            })
+        return results
+
+    @app.get("/api/deployments/{deployment}")
+    async def get_deployment(deployment: str) -> dict[str, Any]:
+        """Get deployment detail: configured intent + small status summary."""
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+        dep_cfg = config.deployments[deployment]
+        try:
+            info = manager.state.get(deployment)
+            status = info.status
+        except KeyError:
+            status = "stopped"
+
+        # Resolve store paths for the detail response
+        resolved = resolve_deployment(config, deployment)
+
+        return {
+            "deployment_name": deployment,
+            "model": dep_cfg.model,
+            "runtime": dep_cfg.runtime,
+            "host": dep_cfg.host,
+            "placement": {
+                "accelerator_ids": dep_cfg.placement.accelerator_ids
+                if dep_cfg.placement
+                else [],
+            },
+            "model_host_path": resolved.model_host_path,
+            "model_container_path": resolved.model_container_path,
+            "runtime_args": _mask_sensitive_args(resolved.runtime_args),
+            "status": status,
+        }
+
+    @app.get("/api/deployments/{deployment}/status")
+    async def get_deployment_status(deployment: str) -> dict[str, Any]:
+        """Get live operational status for a deployment."""
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+        try:
+            info = manager.state.get(deployment)
+            return {
+                "deployment_name": info.model_name,
+                "status": info.status,
+                "port": info.port,
+                "container_id": info.container_id,
+                "started_at": info.started_at.isoformat(),
+            }
+        except KeyError:
+            return {
+                "deployment_name": deployment,
+                "status": "stopped",
+            }
+
+    @app.post("/api/deployments/{deployment}/load", status_code=202)
+    async def load_deployment(deployment: str) -> dict[str, Any]:
         """Load a deployment (async).
 
         Resolves the deployment config and starts the container via the
         backend adapter. Returns immediately; poll status for progress.
         """
-        deployment_name = body.deployment
-        if deployment_name not in config.deployments:
+        if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
-                detail=f"deployment {deployment_name!r} not found in config",
+                detail=f"deployment {deployment!r} not found in config",
             )
 
-        # Resolve the deployment and start it via the lifecycle manager.
-        resolved = resolve_deployment(config, deployment_name)
+        resolved = resolve_deployment(config, deployment)
 
         try:
-            info = await manager.load_model(deployment_name, resolved)
+            info = await manager.load_model(deployment, resolved)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=500,
-                detail=f"failed to start deployment {deployment_name!r}: {exc}",
+                detail=f"failed to start deployment {deployment!r}: {exc}",
             )
 
         return {
@@ -187,46 +263,38 @@ def _register_routes(app: FastAPI) -> None:
             "container_id": info.container_id,
         }
 
-    @app.post("/deployments/unload")
-    async def unload_deployment(body: UnloadModelRequest) -> dict[str, str]:
+    @app.post("/api/deployments/{deployment}/unload")
+    async def unload_deployment(deployment: str) -> dict[str, str]:
         """Unload a deployment."""
-        deployment_name = body.deployment
-        try:
-            await manager.unload_model(deployment_name)
-        except KeyError:
+        if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
-                detail=f"deployment {deployment_name!r} not found",
+                detail=f"deployment {deployment!r} not found in config",
             )
-
-        return {"deployment_name": deployment_name, "status": "stopped"}
-
-    @app.get("/deployments")
-    async def list_deployments() -> list[dict[str, Any]]:
-        """List all deployments with status."""
-        names = manager.state.list_deployments()
-        return [
-            {
-                "deployment_name": info.model_name,
-                "backend": info.backend,
-                "port": info.port,
-                "status": info.status,
-                "started_at": info.started_at,
-            }
-            for info in (manager.state.get(n) for n in names)
-        ]
-
-    @app.get("/deployments/{deployment}/status")
-    async def get_deployment_status(deployment: str) -> dict[str, str]:
-        """Get status of a single deployment."""
         try:
-            info = manager.state.get(deployment)
+            await manager.unload_model(deployment)
         except KeyError:
-            raise HTTPException(
-                status_code=404, detail=f"deployment {deployment!r} not found",
-            )
+            # Deployment not in state (already stopped/unloaded)
+            return {"deployment_name": deployment, "status": "stopped"}
 
-        return {"deployment_name": info.model_name, "status": info.status}
+        return {"deployment_name": deployment, "status": "stopped"}
+
+    @app.post("/api/proxy/{deployment}/{path:path}")
+    async def proxy_passthrough(
+        request: Request, deployment: str, path: str,
+    ) -> Any:
+        """Scoped passthrough to backend-specific endpoints.
+
+        The path is forwarded literally to the backend.
+        Example: /api/proxy/deployment/v1/embeddings -> /v1/embeddings
+        """
+        dep = _get_running_deployment(deployment, manager)
+        backend_url = _backend_url(dep, config)
+        body = await request.json()
+
+        return _blocking_proxy(backend_url + f"/{path}", body)
+
+    # ── /v1/ OpenAI-compatible inference routes ────────────────────
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
@@ -275,20 +343,17 @@ def _register_routes(app: FastAPI) -> None:
             backend_url + "/v1/chat/completions", backend_body
         )
 
-    @app.post("/v1/backends/{deployment}/{path:path}")
-    async def backend_passthrough(
-        request: Request, deployment: str, path: str,
-    ) -> Any:
-        """Scoped passthrough to backend-specific endpoints.
 
-        Routes to backend container for deployment-specific API calls
-        (embeddings, tool calls, etc.).
-        """
-        dep = _get_running_deployment(deployment, manager)
-        backend_url = _backend_url(dep, config)
-        body = await request.json()
-
-        return _blocking_proxy(backend_url + f"/v1/{path}", body)
+def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Mask sensitive runtime args (tokens, keys, secrets) in the detail response."""
+    sensitive_keys = {"hf_token", "api_key", "secret_key", "password", "token"}
+    masked: dict[str, Any] = {}
+    for key, value in args.items():
+        if key in sensitive_keys and value is not None:
+            masked[key] = "***redacted***"
+        else:
+            masked[key] = value
+    return masked
 
 
 def _get_running_deployment(

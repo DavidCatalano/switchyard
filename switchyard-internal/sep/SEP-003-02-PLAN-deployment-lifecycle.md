@@ -54,43 +54,43 @@ implemented as part of SEP-003:
 **Goal**: Failing tests that define the new `/api/` route shape, response bodies, and lifecycle behaviors.
 
 #### Tasks
-- [ ] **T1.1**: Write API route tests for new `/api/deployments` list endpoint
+- [x] **T1.1**: Write API route tests for new `/api/deployments` list endpoint
   - File: `switchyard-api/tests/test_api.py` (new class `TestApiDeploymentRoutes`)
   - `GET /api/deployments` returns all configured deployments with status
   - Configured deployments with no lifecycle state get `status: "stopped"`
   - Active deployments reflect their actual in-memory status
   - Old `GET /deployments` no longer matches (returns 404)
 
-- [ ] **T1.2**: Write API route tests for `GET /api/deployments/{deployment}` detail endpoint
+- [x] **T1.2**: Write API route tests for `GET /api/deployments/{deployment}` detail endpoint
   - Returns model, runtime, host references, placement, resolved store paths, runtime args at config layer, current status summary
   - Does NOT return full env/volumes/Docker options/command arrays
   - Returns 404 for unknown deployment name
   - Configured deployment with no lifecycle state returns `status: "stopped"`
 
-- [ ] **T1.3**: Write API route tests for `GET /api/deployments/{deployment}/status` under `/api/`
+- [x] **T1.3**: Write API route tests for `GET /api/deployments/{deployment}/status` under `/api/`
   - Returns live operational state for known deployments
   - Returns 404 for unknown deployment
   - Old path `GET /deployments/{deployment}/status` no longer matches
 
-- [ ] **T1.4**: Write API route tests for `POST /api/deployments/{deployment}/load`
+- [x] **T1.4**: Write API route tests for `POST /api/deployments/{deployment}/load`
   - Path-based deployment ID (no request body)
   - Returns 202 with deployment info on success
   - Returns 404 for unknown deployment name
   - Old body-based `POST /deployments/load` no longer matches
 
-- [ ] **T1.5**: Write API route tests for `POST /api/deployments/{deployment}/unload`
+- [x] **T1.5**: Write API route tests for `POST /api/deployments/{deployment}/unload`
   - Path-based deployment ID (no request body)
   - Returns 200 with status `"stopped"`
   - Returns 404 for unknown deployment name
   - Idempotent: unloading a deployment with no container returns `stopped`
 
-- [ ] **T1.6**: Write API route tests for `POST /api/proxy/{deployment}/{path:path}`
+- [x] **T1.6**: Write API route tests for `POST /api/proxy/{deployment}/{path:path}`
   - Proxy to healthy running deployment succeeds
   - Proxy to unknown deployment returns 404
   - Proxy to stopped deployment returns 400
   - Old `POST /v1/backends/{deployment}/{path:path}` no longer matches
 
-- [ ] **T1.7**: Write tests verifying `/v1/models` and `/v1/chat/completions` are unchanged
+- [x] **T1.7**: Write tests verifying `/v1/models` and `/v1/chat/completions` are unchanged
   - Confirms OpenAI-compatible routes were not disturbed by migration
 
 ### Phase 2: Reconciliation Layer
@@ -159,54 +159,54 @@ implemented as part of SEP-003:
 **Goal**: Replace existing routes with new `/api/`-prefixed routes, wired to reconciliation and lifecycle manager.
 
 #### Tasks
-- [ ] **T3.1**: Refactor route registration — remove `LoadModelRequest`/`UnloadModelRequest` body models
+- [x] **T3.1**: Refactor route registration — remove `LoadModelRequest`/`UnloadModelRequest` body models
   - File: `switchyard-api/src/switchyard/app.py`
   - Remove body-based request models; deployment ID comes from path parameter
 
-- [ ] **T3.2**: Implement `GET /api/deployments`
+- [x] **T3.2**: Implement `GET /api/deployments`
   - Returns all configured deployments from `config.deployments`
   - For each, look up in-memory state; derive `status: "stopped"` if absent
   - Attach current status to each entry
   - Call reconciliation before building the list
 
-- [ ] **T3.3**: Implement `GET /api/deployments/{deployment}`
+- [x] **T3.3**: Implement `GET /api/deployments/{deployment}`
   - Validate deployment exists in config
   - Reconcile the deployment
   - Return configured/resolved intent: model, runtime, host, placement, resolved store paths, runtime args at config layer
   - Attach current status summary (or `stopped` if no state)
 
-- [ ] **T3.4**: Implement `GET /api/deployments/{deployment}/status`
+- [x] **T3.4**: Implement `GET /api/deployments/{deployment}/status`
   - Validate deployment exists in config
   - Reconcile the deployment
   - Return live operational state: status, port, container_id, started_at, health
 
-- [ ] **T3.5**: Implement `POST /api/deployments/{deployment}/load`
+- [x] **T3.5**: Implement `POST /api/deployments/{deployment}/load`
   - Validate deployment exists in config
   - Resolve deployment
   - Reconcile before load (clears stale state or adopts already-running state)
   - Call `manager.load_model()`
   - Return 202 with deployment info
 
-- [ ] **T3.6**: Implement `POST /api/deployments/{deployment}/unload`
+- [x] **T3.6**: Implement `POST /api/deployments/{deployment}/unload`
   - Validate deployment exists in config
   - Resolve deployment
   - Reconcile before unload
   - If container already gone, return idempotent `stopped`
   - Otherwise call `manager.unload_model()`
 
-- [ ] **T3.7**: Implement `POST /api/proxy/{deployment}/{path:path}`
+- [x] **T3.7**: Implement `POST /api/proxy/{deployment}/{path:path}`
   - Reconcile the deployment before proxying
   - Resolve deployment ID → lifecycle state → container → backend URL → proxied path
   - Use existing proxy helpers (`_blocking_proxy`, `_streaming_proxy`)
   - Reject if deployment is not running
 
-- [ ] **T3.8**: Remove old routes
+- [x] **T3.8**: Remove old routes
   - `POST /deployments/load`, `POST /deployments/unload`
   - `GET /deployments`, `GET /deployments/{deployment}/status`
   - `POST /v1/backends/{deployment}/{path:path}`
   - Verify no other code paths reference old routes
 
-- [ ] **T3.9**: Update `_get_running_deployment` and `_backend_url` helpers
+- [x] **T3.9**: Update `_get_running_deployment` and `_backend_url` helpers
   - Remove references to removed routes
   - Keep helpers for `/v1/chat/completions` (unchanged)
 
@@ -215,7 +215,7 @@ implemented as part of SEP-003:
 **Goal**: All existing tests pass against new routes. Smoke tests aligned on deployment IDs and new paths.
 
 #### Tasks
-- [ ] **T4.1**: Update `test_api.py` — migrate existing tests to new `/api/` paths
+- [x] **T4.1**: Update `test_api.py` — migrate existing tests to new `/api/` paths
   - Old `TestDeploymentRoutes` class: update all paths to `/api/deployments/...`
   - Old `TestOpenAIProxy` backend tests: update to `/api/proxy/...`
   - Remove `LoadModelRequest`/`UnloadModelRequest` body usage; use path params
@@ -223,23 +223,23 @@ implemented as part of SEP-003:
     do not retain compatibility tests except explicit 404 assertions for
     removed routes
 
-- [ ] **T4.2**: Update `test_proxy.py` — migrate backend passthrough tests to `/api/proxy/`
+- [x] **T4.2**: Update `test_proxy.py` — migrate backend passthrough tests to `/api/proxy/`
   - Update all `/v1/backends/` references to `/api/proxy/`
 
-- [ ] **T4.3**: Update `test_app.py` if it references old routes
+- [x] **T4.3**: Update `test_app.py` if it references old routes
 
-- [ ] **T4.4**: Verify `GET /v1/models` tests still pass unchanged
+- [x] **T4.4**: Verify `GET /v1/models` tests still pass unchanged
 
-- [ ] **T4.5**: Verify `POST /v1/chat/completions` tests still pass unchanged
+- [x] **T4.5**: Verify `POST /v1/chat/completions` tests still pass unchanged
 
-- [ ] **T4.6**: Update operational helpers and manual smoke references
+- [x] **T4.6**: Update operational helpers and manual smoke references
   - File: `Makefile`
   - Update curl targets from old `/deployments/...` routes to new
     `/api/deployments/...` routes
   - Update any README or SEP manual smoke commands that still reference old
     lifecycle route paths
 
-- [ ] **T4.7**: Run full test suite
+- [x] **T4.7**: Run full test suite
   - `uv run pytest`
   - `uv run ruff check src tests --fix`
   - `uv run mypy src/switchyard`
