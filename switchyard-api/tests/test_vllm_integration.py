@@ -67,18 +67,22 @@ def docker_available():
     return _docker_available()
 
 
-@pytest.mark.skipif(not _docker_available(), reason="Docker not available")
 class TestVLLMDocker:
     """Integration tests requiring a Docker daemon."""
 
+    @pytest.mark.skipif(not _docker_available(), reason="Docker not available")
     def test_docker_ping(self) -> None:
         """Docker daemon is reachable."""
         from docker import from_env
         client = from_env()
         assert client.ping()
 
-    def test_container_start_from_resolved(self) -> None:
-        """Adapter can create a container from ResolvedDeployment."""
+
+class TestVLLMResolvedCommand:
+    """Tests for resolved deployment command construction."""
+
+    def test_cli_args_build_from_resolved_deployment(self) -> None:
+        """ResolvedDeployment runtime args validate and render as CLI args."""
         from switchyard.adapters.vllm import VLLMAdapter
 
         resolved = _make_resolved(
@@ -97,9 +101,6 @@ class TestVLLMDocker:
         assert isinstance(cli_args, list)
         assert any("--model" in arg for arg in cli_args)
 
-        # Container creation would need a valid model path, so we just
-        # validate the args structure. Full integration test requires
-        # a real model mounted.
         assert len(cli_args) > 0
 
     def test_cli_args_structure(self) -> None:
