@@ -213,6 +213,9 @@ class TestVLLMAdapter:
         assert labels["switchyard.runtime"] == "vllm"
         assert labels["switchyard.host"] == "test-host"
 
+        # Container name: switchyard-{deployment_name}
+        assert call_kwargs["name"] == "switchyard-gpu-test"
+
         # Command includes --host 0.0.0.0 and --port 8000
         command = call_kwargs["command"]
         assert "--host" in command
@@ -410,3 +413,40 @@ class TestVLLMAdapter:
         assert labels["switchyard.model"] == "test-model"
         assert labels["switchyard.runtime"] == "vllm"
         assert labels["switchyard.host"] == "test-host"
+
+    def test_start_container_name_format(self, adapter: VLLMAdapter) -> None:
+        """Container name is switchyard-{deployment_name}."""
+        resolved = ResolvedDeployment(
+            deployment_name="my-long-deployment-name",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=[],
+            docker_host=None,
+            docker_network="",
+            runtime_args={"model": "/models/test"},
+            container_environment={},
+            container_options={},
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "name123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        adapter.start(resolved, 9030)
+
+        call_kwargs = mock_containers.run.call_args.kwargs
+        assert call_kwargs["name"] == "switchyard-my-long-deployment-name"

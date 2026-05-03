@@ -240,6 +240,10 @@ class VLLMAdapter(BackendAdapter):
         # Uses store_mounts from resolved deployment.
         kwargs["volumes"] = resolved.store_mounts
 
+        # Explicit container name for human readability.
+        # Labels remain the authoritative ownership mechanism.
+        kwargs["name"] = f"switchyard-{resolved.deployment_name}"
+
         # Device-specific configuration
         runtime_device = runtime.device or "cuda"
         if runtime_device == "cuda":
