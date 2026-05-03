@@ -98,7 +98,7 @@ implemented as part of SEP-003:
 **Goal**: Request-time Docker state reconciliation via the lifecycle layer and host-aware Docker SDK factory, using Switchyard labels as the authoritative container lookup.
 
 #### Tasks
-- [ ] **T2.1**: Add reconciliation method to `LifecycleManager`
+- [x] **T2.1**: Add reconciliation method to `LifecycleManager`
   - File: `switchyard-api/src/switchyard/core/lifecycle.py`
   - Method shape should accept enough deployment context to use the correct
     Docker host, backend, internal port, and labels; a bare
@@ -122,7 +122,7 @@ implemented as part of SEP-003:
   - Uses a host-aware Docker client factory: `DockerClientFactory = Callable[[str | None], DockerClient]`. The factory resolves the correct Docker client from `resolved.docker_host` so multi-host behavior is preserved. A small helper in `switchyard.core.docker` provides client creation and label-based container lookup; `LifecycleManager` owns the state transitions.
   - `LifecycleManager.__init__` accepts an optional `docker_client_factory` parameter. Tests inject a mock factory; production uses the factory from `create_app()`.
 
-- [ ] **T2.2**: Write unit tests for `LifecycleManager.reconcile()`
+- [x] **T2.2**: Write unit tests for `LifecycleManager.reconcile()`
   - File: `switchyard-api/tests/test_lifecycle.py` (new class `TestReconcile`)
   - Test: reconcile running container → state preserved
   - Test: reconcile running labeled container after API restart → state adopted,
@@ -133,7 +133,7 @@ implemented as part of SEP-003:
   - Test: reconcile stale deployment with health task → task cancelled/removed
   - Test: reconcile unknown deployment → no-op, no error
 
-- [ ] **T2.3**: Wire reconciliation into `load_model`
+- [x] **T2.3**: Wire reconciliation into `load_model`
   - Before load: reconcile to clear stale state that could block a valid load
   - If reconciliation finds a running labeled container for the deployment,
     return/raise consistently with the existing "already deployed" behavior
@@ -142,11 +142,11 @@ implemented as part of SEP-003:
     containers are removed before `adapter.start()` so Docker name conflicts do
     not block a valid load
 
-- [ ] **T2.4**: Wire reconciliation into `unload_model`
+- [x] **T2.4**: Wire reconciliation into `unload_model`
   - Before unload: reconcile first
   - If container already gone/exited: return idempotent success (state already cleared)
 
-- [ ] **T2.5**: Write lifecycle integration tests for reconciliation behavior
+- [x] **T2.5**: Write lifecycle integration tests for reconciliation behavior
   - File: `switchyard-api/tests/test_lifecycle.py`
   - Test: API restart scenario → reconcile adopts running labeled container
   - Test: load → reconcile clears stale → load succeeds

@@ -8,16 +8,28 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from typing import TYPE_CHECKING
+
+import docker
 
 from switchyard.config.models import (
     Config,
     ResolvedDeployment,
 )
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
+from switchyard.core.docker import DockerClientFactory as DockerClientFactoryType
+from switchyard.core.docker import (
+    find_container_by_labels,
+    get_container_host_port,
+    get_container_status,
+)
 from switchyard.core.orphan import OrphanDetector, _DockerClient
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
 from switchyard.core.state import DeploymentStateManager
+
+if TYPE_CHECKING:
+    from switchyard.core.docker import _DockerContainer
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +54,7 @@ class LifecycleManager:
         backend_host: str = "localhost",
         backend_scheme: str = "http",
         docker_network: str | None = None,
+        docker_client_factory: DockerClientFactoryType | None = None,
     ) -> None:
         self.registry = registry or AdapterRegistry()
         self.port_allocator = port_allocator or PortAllocator()
@@ -51,6 +64,7 @@ class LifecycleManager:
         self._backend_host = backend_host
         self._backend_scheme = backend_scheme
         self._docker_network = docker_network
+        self._docker_client_factory = docker_client_factory
         # backend name → live adapter instance (one per backend, reused)
         self._adapters: dict[str, BackendAdapter] = {}
         # model name → background health task
@@ -67,6 +81,168 @@ class LifecycleManager:
             )
         return self._adapters[backend]
 
+    def reconcile(
+        self, deployment_name: str, resolved: ResolvedDeployment,
+    ) -> DeploymentInfo | None:
+        """Reconcile in-memory state with actual Docker container state.
+
+        Looks up the Docker container by Switchyard labels and corrects
+        in-memory state to match reality.
+
+        Four outcomes:
+        1. Container running and already in memory → preserve state, update
+           to running if needed, return DeploymentInfo.
+        2. Container running and missing from memory → adopt it, reserve
+           port, return DeploymentInfo.
+        3. Container exited/dead → clear in-memory state, release port,
+           cancel health task, return None.
+        4. Container gone → clear in-memory state, release port, cancel
+           health task, return None.
+
+        Args:
+            deployment_name: Logical deployment identifier.
+            resolved: Fully resolved deployment configuration.
+
+        Returns:
+            ``DeploymentInfo`` if the deployment is running, ``None``
+            otherwise.
+        """
+        # No factory configured → skip reconciliation
+        if self._docker_client_factory is None:
+            # If we have in-memory state, return it as-is
+            try:
+                return self.state.get(deployment_name)
+            except KeyError:
+                return None
+
+        client = self._docker_client_factory(resolved.docker_host)
+        container = self._find_container(client, deployment_name)
+
+        if container is None:
+            # Container gone → clear any stale state
+            self._clear_deployment(deployment_name)
+            return None
+
+        status = self._get_container_status(container)
+
+        if status == "running":
+            return self._handle_running(deployment_name, container, resolved)
+
+        # exited, dead, or other non-running state
+        self._clear_deployment(deployment_name)
+        return None
+
+    def _find_container(
+        self, client: docker.DockerClient, deployment_name: str,
+    ) -> _DockerContainer | None:
+        """Find a Switchyard-managed container by label."""
+        return find_container_by_labels(client, deployment_name)
+
+    def _get_container_status(self, container: _DockerContainer) -> str:
+        """Get normalized Docker container status."""
+        return get_container_status(container)
+
+    def _handle_running(
+        self,
+        deployment_name: str,
+        container: _DockerContainer,
+        resolved: ResolvedDeployment,
+    ) -> DeploymentInfo:
+        """Handle a running container found during reconciliation."""
+        existing = self.state._deployments.get(deployment_name)
+
+        if existing is not None:
+            # Already in memory — ensure status is running
+            if existing.status != "running":
+                self.state.update_status(deployment_name, "running")
+            return self.state.get(deployment_name)
+
+        # Running container not in memory → adopt it
+        internal_port = resolved.internal_port
+        port = get_container_host_port(container, internal_port)
+        if port is None:
+            # Can't determine port — treat as gone
+            return self._adopt_container(deployment_name, container, resolved)
+
+        # Reserve the observed port
+        try:
+            self.port_allocator.allocate(port=port)
+        except ValueError:
+            pass  # already allocated
+
+        info = DeploymentInfo(
+            model_name=deployment_name,
+            backend=resolved.backend,
+            port=port,
+            status="running",
+            container_id=container.short_id,
+            metadata=dict(resolved.runtime_args),
+        )
+        self.state.add(info)
+        logger.info(
+            "reconcile: adopted running container for %s "
+            "(port=%d container=%s)",
+            deployment_name, port, container.short_id,
+        )
+        return info
+
+    def _adopt_container(
+        self,
+        deployment_name: str,
+        container: _DockerContainer,
+        resolved: ResolvedDeployment,
+    ) -> DeploymentInfo:
+        """Adopt a running container even when host port can't be resolved."""
+        info = DeploymentInfo(
+            model_name=deployment_name,
+            backend=resolved.backend,
+            port=resolved.internal_port,
+            status="running",
+            container_id=container.short_id,
+            metadata=dict(resolved.runtime_args),
+        )
+        self.state.add(info)
+        return info
+
+    def _clear_deployment(self, deployment_name: str) -> None:
+        """Clear in-memory state, release port, cancel health task."""
+        # Cancel health task
+        if deployment_name in self._health_tasks:
+            self._health_tasks[deployment_name].cancel()
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    loop.create_task(self._wait_for_cancellation(
+                        self._health_tasks[deployment_name],
+                    ))
+                else:
+                    # Synchronous context — just discard
+                        pass
+            except Exception:
+                pass
+            del self._health_tasks[deployment_name]
+
+        # Remove state and release port
+        try:
+            info = self.state.get(deployment_name)
+            self.port_allocator.release(info.port)
+            self.state.remove(deployment_name)
+            logger.info(
+                "reconcile: cleared stale state for %s (port=%d released)",
+                deployment_name, info.port,
+            )
+        except KeyError:
+            pass  # already gone from state
+
+    async def _wait_for_cancellation(self, task: asyncio.Task[None]) -> None:
+        """Wait for a cancelled task to finish."""
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
     async def load_model(
         self, deployment_name: str, resolved: ResolvedDeployment,
     ) -> DeploymentInfo:
@@ -75,6 +251,9 @@ class LifecycleManager:
         Allocates a port, starts the container via the backend adapter,
         records the deployment in state as ``"loading"``, and begins
         background health polling.
+
+        Before starting, reconciles in-memory state with Docker to clear
+        stale state or adopt an already-running container.
 
         Returns immediately (non-blocking).
 
@@ -89,7 +268,18 @@ class LifecycleManager:
             ValueError: If the deployment is already loaded.
             KeyError: If the backend is not registered.
         """
-        # Check for duplicates
+        # Reconcile first: clear stale state or adopt running container
+        # Only block on "already running" if we actually found a Docker container
+        reconciled = self.reconcile(deployment_name, resolved)
+        if reconciled is not None and self._docker_client_factory is not None:
+            # Container already running (adopted or preserved)
+            raise ValueError(
+                f"deployment {deployment_name!r} is already running "
+                f"(container {reconciled.container_id})"
+            )
+
+        # Check for duplicates in state (should be cleared by reconcile,
+        # but defensive check remains)
         if deployment_name in self.state.list_deployments():
             existing = self.state.get(deployment_name)
             raise ValueError(
@@ -148,13 +338,25 @@ class LifecycleManager:
         Stops the container via the adapter, releases the port,
         cancels the background health task, and removes state.
 
+        If the container is already gone (cleared by reconcile),
+        returns idempotent success.
+
         Args:
             deployment_name: The deployment to unload.
 
         Raises:
             KeyError: If the deployment is not found in state.
         """
-        deployment = self.state.get(deployment_name)
+        # Check if deployment exists in state
+        try:
+            deployment = self.state.get(deployment_name)
+        except KeyError:
+            # Not in state — check Docker for any straggler
+            # Cancel health task if it exists
+            if deployment_name in self._health_tasks:
+                self._health_tasks[deployment_name].cancel()
+                del self._health_tasks[deployment_name]
+            return  # idempotent: already unloaded
 
         # Cancel health poll
         if deployment_name in self._health_tasks:

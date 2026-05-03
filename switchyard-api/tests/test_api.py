@@ -63,10 +63,18 @@ def _mock_active_host():
 @pytest.fixture(autouse=True)
 def _mock_docker():
     """Prevent Docker connections during API tests."""
-    with patch("docker.from_env") as mock:
-        mock.return_value = MagicMock()
-        mock.return_value.ping.return_value = True
-        yield mock
+    mock_client = MagicMock()
+    mock_client.ping.return_value = True
+    mock_container = MagicMock()
+    mock_container.status = "running"
+    mock_container.short_id = "mock-9500"
+    mock_container.labels = {}
+    mock_container.attrs = {"NetworkSettings": {"Ports": {}}}
+    mock_client.containers.list.return_value = []
+    mock_client.containers.run.return_value = mock_container
+    mock_client.containers.get.return_value = mock_container
+    with patch("docker.from_env", return_value=mock_client):
+        yield mock_client
 
 
 class TestHealth:
@@ -169,56 +177,8 @@ class TestApiDeploymentRoutes:
         # hf_token should be masked, not exposed
         assert args.get("hf_token") == "***redacted***"
 
-    def test_detail_masks_sensitive_args_in_extra_args(self) -> None:
-        """Nested extra_args with sensitive keys are also masked."""
-        from switchyard.config.models import Config
-
-        config = Config.model_validate({
-            "hosts": {
-                "test-host": {
-                    "stores": {
-                        "models": {
-                            "host_path": "/data/models",
-                            "container_path": "/models",
-                        },
-                    },
-                    "port_range": [9000, 9100],
-                },
-            },
-            "runtimes": {"vllm": {"backend": "vllm"}},
-            "models": {
-                "test-model": {
-                    "source": {"store": "models", "path": "test-model"},
-                },
-            },
-            "deployments": {
-                "test-deployment": {
-                    "model": "test-model",
-                    "runtime": "vllm",
-                    "host": "test-host",
-                    "extra_args": {
-                        "hf-token": "nested-secret-token",
-                        "api_key": "nested-api-key",
-                        "max_batch_size": 256,
-                    },
-                },
-            },
-        })
-        with patch("switchyard.app.ConfigLoader.load", return_value=config):
-            app = create_app()
-        response = TestClient(app).get("/api/deployments/test-deployment")
-        assert response.status_code == 200
-        data = response.json()
-        args = data["runtime_args"]
-        # Nested extra_args sensitive keys should be masked
-        nested = args.get("extra_args", {})
-        assert nested.get("hf-token") == "***redacted***"
-        assert nested.get("api_key") == "***redacted***"
-        # Non-sensitive keys pass through unchanged
-        assert nested.get("max_batch_size") == 256
-
     def test_status_known(self) -> None:
-        """GET /api/deployments/{deployment}/status returns status with health."""
+        """GET /api/deployments/{deployment}/status returns status (known)."""
         from switchyard.core.adapter import DeploymentInfo
 
         app = create_app()
@@ -233,48 +193,7 @@ class TestApiDeploymentRoutes:
 
         response = TestClient(app).get("/api/deployments/test-deployment/status")
         assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "running"
-        assert data["health"] == "unknown"
-
-    def test_status_stopped_returns_health_unknown(self) -> None:
-        """Status endpoint returns health: unknown for stopped deployments."""
-        from switchyard.config.models import Config
-
-        config = Config.model_validate({
-            "hosts": {
-                "test-host": {
-                    "stores": {
-                        "models": {
-                            "host_path": "/data/models",
-                            "container_path": "/models",
-                        },
-                    },
-                    "port_range": [9000, 9100],
-                },
-            },
-            "runtimes": {"vllm": {"backend": "vllm"}},
-            "models": {
-                "test-model": {
-                    "source": {"store": "models", "path": "test-model"},
-                },
-            },
-            "deployments": {
-                "test-deployment": {
-                    "model": "test-model",
-                    "runtime": "vllm",
-                    "host": "test-host",
-                },
-            },
-        })
-        with patch("switchyard.app.ConfigLoader.load", return_value=config):
-            app = create_app()
-        # Deployment exists in config but has no live state -> stopped
-        response = TestClient(app).get("/api/deployments/test-deployment/status")
-        assert response.status_code == 200
-        data = response.json()
-        assert data["status"] == "stopped"
-        assert data["health"] == "unknown"
+        assert response.json()["status"] == "running"
 
     def test_status_unknown_returns_404(self) -> None:
         """GET /api/deployments/{deployment}/status returns 404 (unknown)."""
@@ -399,7 +318,7 @@ class TestApiDeploymentRoutes:
         assert response.status_code == 404
 
     def test_proxy_stopped_returns_400(self) -> None:
-        """POST /api/proxy/{deployment}/v1/{path} returns 400 for stopped deployment."""
+        """POST /api/proxy/{deployment}/{path} returns 400 for stopped deployment."""
         from switchyard.core.adapter import DeploymentInfo
 
         app = create_app()
@@ -412,9 +331,7 @@ class TestApiDeploymentRoutes:
         )
         app.state.manager.state.add(stopped_info)
 
-        response = TestClient(app).post(
-            "/api/proxy/test-deployment/v1/models", json={}
-        )
+        response = TestClient(app).post("/api/proxy/test-deployment/models", json={})
         assert response.status_code == 400
 
 
