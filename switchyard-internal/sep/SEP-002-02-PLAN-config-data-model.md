@@ -13,7 +13,7 @@
 
 Replace the SEP-001 config shape (`global` → `runtime_defaults` → per-model `runtime`) with an entity-based model defining `hosts`, `runtimes`, `models`, and `deployments`. The loader resolves references between entities into a complete configuration data object. Process-local bootstrap settings move to `.env`.
 
-This PLAN delivers the data model and loader only. Lifecycle changes (wiring adapters, starting containers by deployment ID) belong to SEP-003.
+This PLAN delivers the entity data model, loader, resolved deployment wiring, and closeout hardening needed to smoke-test one CPU deployment through the OpenAI-compatible API surface. Broader lifecycle orchestration remains SEP-003 scope.
 
 The target config shape:
 
@@ -68,7 +68,7 @@ deployments:
 
 #### Tasks
 - [x] **T3.1**: Replace old config hierarchy (`GlobalConfig`, `RuntimeDefaults`, `ModelConfig`) with new entity models. Preserve `VLLMRuntimeConfig`'s typed field validation — moved as standalone class, `LegacyModelConfig`'s model/repo exclusivity validator removed (model path now comes from store resolution)
-- [x] **T3.2**: Remove old `config.yaml`; create new `config.yaml` with host/runtime/model/deployment sections. Translated from `reference-then-delete/vLLM/docker-compose.yml` (trainbox: dual-GPU, Qwen3.6-27B-FP8, vLLM latest, docker_host `tcp://127.0.0.1:2375`, port_range [7113, 7213], internal_port 7113, ai_net, host/container paths mirror compose mounts, env vars, IPC, ulimits).
+- [x] **T3.2**: Remove old `config.yaml`; create new `config.yaml` with host/runtime/model/deployment sections. Translated from `reference-then-delete/vLLM/docker-compose.yml` (trainbox: dual-GPU, Qwen3.6-27B-FP8, vLLM latest, docker_host `tcp://127.0.0.1:2375`, port_range [18000, 18100], internal_port 7113, ai_net, host/container paths mirror compose mounts, env vars, IPC, ulimits).
 - [x] **T3.3**: Update `config/loader.py` to load new entity models and `.env` settings via pydantic-settings. Removed legacy cascade/merge utilities and `ConfigLoader.load()` implementation. Added `resolve_deployment()` that produces `ResolvedDeployment` with reference lookup, store resolution, cascade merges, and `.env` `docker_host` override
 - [x] **T3.4**: Update app bootstrap to read `.env` settings via `AppSettings()` (log level, active host). Added `_resolve_active_host()` to derive backend/docker settings from the active host. Routes updated to check `config.deployments` instead of `config.models`. API host/port remain uvicorn/Makefile concerns
 - [x] **T3.5**: `core/docker.py` already uses `AppSettings().docker_host` with fallback. No changes needed. Verified `.env` `SWITCHYARD_DOCKER_HOST` takes precedence over host canonical `docker_host`
@@ -96,6 +96,23 @@ deployments:
 - [x] **T4.14**: Tests: extra_args escape hatch — `deployment.extra_args` survives resolution nested as `runtime_args["extra_args"]`, appears in `VLLMRuntimeConfig.extra_args`, and renders as CLI flags in adapter command
 - [x] **T4.15**: Tests: store mounts — resolved deployment includes all host stores in `store_mounts`, adapter mounts both `models` (ro) and `hf_cache` (rw) with correct modes
 - [x] **T4.16**: Tests: docker_host wiring — adapter uses `resolved.docker_host` when no injected Docker client exists, `_backend_url()` uses active host fallback when deployment metadata lacks host/scheme
+
+### Phase 5: Closeout Hardening and Smoke Readiness
+
+**Goal**: Finish accepted SEP-002 scope creep deliberately: make runtime failures cleaner, make operational Docker commands identify Switchyard-owned containers correctly, expose active deployments through an OpenAI-compatible model discovery endpoint, and prove the TinyLlama CPU smoke path works.
+
+#### Tasks
+- [ ] **T5.1**: Runtime cleanup: if `LifecycleManager.load_model()` allocates a port and `adapter.start()` fails, release the allocated port before returning/raising. Add a regression test proving the port is released on start failure.
+- [ ] **T5.2**: Load failure response: prevent Docker/container startup errors from bubbling as unstructured FastAPI tracebacks. `POST /deployments/load` must return structured JSON with a clear error message. Add a test for failed deployment load.
+- [ ] **T5.3**: Container ownership labels: every container created by a Switchyard adapter must include labels identifying Switchyard ownership and resolved deployment context: `switchyard.managed=true`, `switchyard.deployment`, `switchyard.model`, `switchyard.runtime`, and `switchyard.host`. Add adapter tests asserting labels are passed to Docker.
+- [ ] **T5.4**: Makefile Docker operations: remove network-based `docker-ps` behavior. Update `docker-ps` to filter by `label=switchyard.managed=true`; update `docker-clean` to target only Switchyard-managed containers by label. Remove `DOCKER_NETWORK` from Makefile help/config unless another target still needs it.
+- [ ] **T5.5**: OpenAI model discovery: add `GET /v1/models` returning an OpenAI-compatible list object for active chat-callable deployments only. Each item should include at least `id`, `object: "model"`, `created`, and `owned_by: "switchyard"`. Use the client-callable deployment ID as `id`.
+- [ ] **T5.6**: Tests for `GET /v1/models`: returns an empty OpenAI-compatible list when nothing is loaded; returns active deployment IDs after load/state registration; excludes configured-but-not-running deployments.
+- [ ] **T5.7**: Strict `.env` cleanup: keep `AppSettings` limited to `config_path`, `log_level`, `api_host`, `api_port`, `active_host`, and `docker_host`; keep `extra="forbid"`; remove stale references to deprecated `.env` keys from Makefile, tests, comments, and docs; confirm `.env.example` exactly matches supported settings.
+- [ ] **T5.8**: Planning/doc cleanup: update validation checkboxes based on actual gates, keep decision log statuses current, remove stale references to `make test-vllm-cpu`, avoid stale hardcoded port ranges, fix the PRD stale `placements` example if still present, and keep DEVLOG concise per `AGENTS.md`.
+- [ ] **T5.9**: Do not restore old `test-vllm-cpu` or `test-vllm-gpu` Make targets unless opt-in integration tests are explicitly reintroduced. The closeout smoke path is TinyLlama CPU load/chat/unload through the API.
+- [ ] **T5.10**: Final validation: from `switchyard-api/`, run `uv run pytest`, `uv run ruff check src tests`, and `uv run mypy src/switchyard`.
+- [ ] **T5.11**: Manual TinyLlama CPU smoke: restart `make dev`; run `make load-tinyllama-cpu`; confirm `GET /deployments` shows the deployment active; confirm `GET /v1/models` lists `tinyllama-1.1b-chat-vllm-cpu-trainbox`; call `POST /v1/chat/completions` with `model: "tinyllama-1.1b-chat-vllm-cpu-trainbox"`; run `make unload-tinyllama-cpu`.
 
 ---
 
@@ -126,6 +143,7 @@ lifecycle state keyed by deployment name.
 2. T2.1–T2.8 (loader and resolution depend on models)
 3. T3.1–T3.7 (code removal and updates depend on loader producing correct output)
 4. T4.1–T4.16 (test migration depends on all new code being in place)
+5. T5.1–T5.11 (closeout hardening depends on load/proxy behavior and tests being migrated)
 
 ### Parallel Work Streams
 - T1.1–T1.6 are independent entity models (can be developed in parallel)
@@ -164,7 +182,10 @@ lifecycle state keyed by deployment name.
 - [ ] The legacy `global` / `runtime_defaults` / per-model `runtime` schema is fully removed; vLLM typed field validation is preserved in the new schema
 - [ ] No test or code path depends on the old config shape
 - [ ] All quality gates pass (pytest, ruff, mypy)
-- [ ] `make test-vllm-cpu` still passes after config schema migration, using the new resolved deployment shape
+- [ ] Runtime startup failures return structured API errors and release allocated ports
+- [ ] Switchyard-created containers are discoverable and cleanable by Switchyard labels, not Docker network names
+- [ ] `GET /v1/models` returns OpenAI-compatible active model discovery backed by active deployments
+- [ ] TinyLlama CPU manual smoke succeeds: load deployment, list active deployment/model, call chat completions, unload deployment
 
 ---
 
@@ -172,12 +193,14 @@ lifecycle state keyed by deployment name.
 
 | # | Decision | Reason | Status | Date |
 |---|----------|--------|--------|------|
-| D1 | Single `config.yaml` for all entities; split into separate files later | Reduces complexity for single-host use case; splitting is a mechanical change driven by volume, not architecture | Draft | 2026-04-30 |
-| D2 | No semantic serving abstractions (`reasoning.enabled`, `multimodal.enabled`) | Avoids adapter translation layer; typed fields map directly to backend flags, `extra_args` is the escape hatch | Draft | 2026-04-30 |
-| D3 | SEP-002 produces `ResolvedDeployment` data object and wires it into adapter/lifecycle (accepted Phase 3 scope expansion). Remaining lifecycle changes (auto-start, container orchestration) stay in SEP-003 scope | Removing the legacy launch config forced adapter/lifecycle type changes; keeping legacy types to shield them would defeat Phase 3. Covered by T4.9–T4.16. | Draft | 2026-04-30 |
-| D4 | No backward compatibility with SEP-001 config shape | Small codebase, no external users; maintaining dual loaders adds complexity with no benefit | Draft | 2026-04-30 |
-| D5 | Preserve vLLM typed field validation from SEP-001 in the new schema | High-value parameters remain validated Pydantic fields; moving them is better than discarding and recreating | Draft | 2026-04-30 |
-| D6 | `.env` `docker_host` overrides `hosts.*.docker_host` for the active process | Canonical host definition lives in YAML; process-level override via `.env` allows remote Docker development without editing managed config | Draft | 2026-04-30 |
+| D1 | Single `config.yaml` for all entities; split into separate files later | Reduces complexity for single-host use case; splitting is a mechanical change driven by volume, not architecture | Agreed | 2026-04-30 |
+| D2 | No semantic serving abstractions (`reasoning.enabled`, `multimodal.enabled`) | Avoids adapter translation layer; typed fields map directly to backend flags, `extra_args` is the escape hatch | Agreed | 2026-04-30 |
+| D3 | SEP-002 produces `ResolvedDeployment` data object and wires it into adapter/lifecycle (accepted Phase 3 scope expansion). Remaining lifecycle changes (auto-start, container orchestration) stay in SEP-003 scope | Removing the legacy launch config forced adapter/lifecycle type changes; keeping legacy types to shield them would defeat Phase 3. Covered by T4.9–T4.16. | Agreed | 2026-04-30 |
+| D4 | No backward compatibility with SEP-001 config shape | Small codebase, no external users; maintaining dual loaders adds complexity with no benefit | Agreed | 2026-04-30 |
+| D5 | Preserve vLLM typed field validation from SEP-001 in the new schema | High-value parameters remain validated Pydantic fields; moving them is better than discarding and recreating | Agreed | 2026-04-30 |
+| D6 | `.env` `docker_host` overrides `hosts.*.docker_host` for the active process | Canonical host definition lives in YAML; process-level override via `.env` allows remote Docker development without editing managed config | Agreed | 2026-04-30 |
+| D7 | Docker operations identify Switchyard-owned containers by labels, not network membership | Network filtering is a weak proxy and breaks across host/network configurations; labels answer which containers Switchyard created | Agreed | 2026-05-02 |
+| D8 | Add OpenAI-compatible `GET /v1/models` for active deployments | OpenAI-compatible clients commonly discover callable model IDs through `/v1/models`; `/deployments` remains the Switchyard-native lifecycle/status endpoint | Agreed | 2026-05-02 |
 
 ---
 

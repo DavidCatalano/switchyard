@@ -59,7 +59,7 @@ runtimes:
 models:
   qwen3-27b-fp8: { ... }
 
-placements:
+deployments:
   qwen3-27b-vllm-trainbox: { ... }
 ```
 
