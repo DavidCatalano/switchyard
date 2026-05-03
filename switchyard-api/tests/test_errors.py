@@ -147,7 +147,7 @@ class TestProxyErrors:
         with patch("switchyard.app.httpx.Client", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
-                "/api/proxy/test-deployment/models",
+                "/api/proxy/test-deployment/v1/models",
                 json={},
             )
         assert resp.status_code == 429

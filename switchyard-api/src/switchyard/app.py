@@ -16,7 +16,6 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
 from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader, resolve_deployment
@@ -127,18 +126,6 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     _register_routes(app)
 
     return app
-
-
-class LoadModelRequest(BaseModel):
-    """Request body for loading a deployment."""
-
-    deployment: str
-
-
-class UnloadModelRequest(BaseModel):
-    """Request body for unloading a deployment."""
-
-    deployment: str
 
 
 def _register_routes(app: FastAPI) -> None:
@@ -345,12 +332,20 @@ def _register_routes(app: FastAPI) -> None:
 
 
 def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
-    """Mask sensitive runtime args (tokens, keys, secrets) in the detail response."""
-    sensitive_keys = {"hf_token", "api_key", "secret_key", "password", "token"}
+    """Mask sensitive runtime args recursively.
+
+    Normalizes keys by replacing '-' with '_' and redacts any key containing
+    'token', 'secret', 'password', or 'api_key'. Handles nested dicts including
+    extra_args.
+    """
+    sensitive_substrings = {"token", "secret", "password", "api_key"}
     masked: dict[str, Any] = {}
     for key, value in args.items():
-        if key in sensitive_keys and value is not None:
+        normalized = key.replace("-", "_")
+        if any(substr in normalized for substr in sensitive_substrings):
             masked[key] = "***redacted***"
+        elif isinstance(value, dict):
+            masked[key] = _mask_sensitive_args(value)
         else:
             masked[key] = value
     return masked

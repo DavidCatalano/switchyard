@@ -169,6 +169,54 @@ class TestApiDeploymentRoutes:
         # hf_token should be masked, not exposed
         assert args.get("hf_token") == "***redacted***"
 
+    def test_detail_masks_sensitive_args_in_extra_args(self) -> None:
+        """Nested extra_args with sensitive keys are also masked."""
+        from switchyard.config.models import Config
+
+        config = Config.model_validate({
+            "hosts": {
+                "test-host": {
+                    "stores": {
+                        "models": {
+                            "host_path": "/data/models",
+                            "container_path": "/models",
+                        },
+                    },
+                    "port_range": [9000, 9100],
+                },
+            },
+            "runtimes": {"vllm": {"backend": "vllm"}},
+            "models": {
+                "test-model": {
+                    "source": {"store": "models", "path": "test-model"},
+                },
+            },
+            "deployments": {
+                "test-deployment": {
+                    "model": "test-model",
+                    "runtime": "vllm",
+                    "host": "test-host",
+                    "extra_args": {
+                        "hf-token": "nested-secret-token",
+                        "api_key": "nested-api-key",
+                        "max_batch_size": 256,
+                    },
+                },
+            },
+        })
+        with patch("switchyard.app.ConfigLoader.load", return_value=config):
+            app = create_app()
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        assert response.status_code == 200
+        data = response.json()
+        args = data["runtime_args"]
+        # Nested extra_args sensitive keys should be masked
+        nested = args.get("extra_args", {})
+        assert nested.get("hf-token") == "***redacted***"
+        assert nested.get("api_key") == "***redacted***"
+        # Non-sensitive keys pass through unchanged
+        assert nested.get("max_batch_size") == 256
+
     def test_status_known(self) -> None:
         """GET /api/deployments/{deployment}/status returns status (known)."""
         from switchyard.core.adapter import DeploymentInfo
