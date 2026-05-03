@@ -225,11 +225,9 @@ PLAN checklist.
 | `AGENTS.md`, `switchyard-internal/process/` | `process` |
 
 - For changes spanning multiple areas, comma-separate scopes:
-  `feat(api,planning)`.
+  `feat(api,web,planning)`.
 - SEP artifacts (`switchyard-internal/sep/`) scope to the primary affected area.
-  The `process` scope is reserved for changes to process artifacts such as
-  `AGENTS.md`, process templates, and coding-standard files.
-- Do not use SEP IDs in commit scope or subject.
+- Do not use SEP IDs in commit scope, subjects, or PR titles.
 - Keep the subject concise and outcome-focused.
 - If a commit body is used, target 3-5 bullets; hard cap at 8 bullets.
 - Put operational detail in SEP artifacts, not in commit bodies.
@@ -240,7 +238,7 @@ Examples:
 
 ```text
 feat(api): apply endpoint migration
-feat(process): revise cold start instructions
+feat(web): revise cold start instructions
 ```
 
 ### Pull Request Workflow
@@ -346,6 +344,9 @@ switchyard/
 ├── AGENTS.md
 ├── Makefile
 ├── README.md
+├── deploy/
+│   ├── lxd-profiles/
+│   └── systemd/
 ├── reference-then-delete/
 ├── switchyard-api/
 │   ├── config.yaml
