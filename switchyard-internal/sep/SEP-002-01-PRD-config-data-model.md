@@ -2,7 +2,7 @@
 
 **Title**: Config Data Model Refactor
 **ID**: SEP-002-01-PRD-config-data-model
-**Status**: Agreed
+**Status**: Complete
 **Date**: 2026-04-30
 **Related Docs**: `SEP-002-04-CONSULT-host-environment-config.md`, `SEP-001-04-CONTEXT-vllm-config.md`
 **GitHub Issue**: https://github.com/DavidCatalano/switchyard/issues/2

@@ -54,12 +54,14 @@
 - 2026-05-03 — T5.7–T5.10 done. `.env` contract and planning artifacts audited;
   old vLLM smoke Make targets remain absent. Final gates: 237 passed, 1 skipped,
   ruff/mypy clean.
+- 2026-05-03 — T5.11 done. Manual TinyLlama CPU smoke passed: load, deployment
+  listing, `/v1/models`, chat completion, and unload all verified.
 
 ---
 
 ## Cold Start / Handoff
 
-Phase 5 closeout remains: manual TinyLlama CPU smoke.
+SEP-002 implementation and smoke validation are complete.
 
 Pre-read:
 - `SEP-002-01-PRD-config-data-model.md`

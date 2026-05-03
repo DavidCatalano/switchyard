@@ -2,7 +2,7 @@
 
 **Title**: Config Data Model Refactor
 **ID**: SEP-002-02-PLAN-config-data-model
-**Status**: Agreed
+**Status**: Complete
 **Date**: 2026-04-30
 **PRD**: `SEP-002-01-PRD-config-data-model.md`
 **ADR(s)**: None
@@ -112,7 +112,7 @@ deployments:
 - [x] **T5.8**: Planning artifacts closeout: PLAN validation criteria and decision log reflect the final implementation; PRD/DEVLOG contain no stale schema or smoke-test references; DEVLOG remains concise per `AGENTS.md`.
 - [x] **T5.9**: Smoke-test command boundary: old `test-vllm-cpu` and `test-vllm-gpu` Make targets remain absent unless opt-in integration tests are explicitly reintroduced; TinyLlama CPU load/chat/unload is the supported manual smoke path.
 - [x] **T5.10**: Final quality gate record: capture the final passing results for `uv run pytest`, `uv run ruff check src tests`, and `uv run mypy src/switchyard` after Phase 5 is complete.
-- [ ] **T5.11**: Manual TinyLlama CPU smoke: restart `make dev`; run `make load-tinyllama-cpu`; confirm `GET /deployments` shows the deployment active; confirm `GET /v1/models` lists `tinyllama-1.1b-chat-vllm-cpu-trainbox`; call `POST /v1/chat/completions` with `model: "tinyllama-1.1b-chat-vllm-cpu-trainbox"`; run `make unload-tinyllama-cpu`.
+- [x] **T5.11**: Manual TinyLlama CPU smoke: restart `make dev`; run `make load-tinyllama-cpu`; confirm `GET /deployments` shows the deployment active; confirm `GET /v1/models` lists `tinyllama-1.1b-chat-vllm-cpu-trainbox`; call `POST /v1/chat/completions` with `model: "tinyllama-1.1b-chat-vllm-cpu-trainbox"`; run `make unload-tinyllama-cpu`.
 
 ---
 
@@ -185,7 +185,7 @@ lifecycle state keyed by deployment name.
 - [x] Runtime startup failures return structured API errors and release allocated ports
 - [x] Switchyard-created containers are discoverable and cleanable by Switchyard labels, not Docker network names
 - [x] `GET /v1/models` returns OpenAI-compatible active model discovery backed by active deployments
-- [ ] TinyLlama CPU manual smoke succeeds: load deployment, list active deployment/model, call chat completions, unload deployment
+- [x] TinyLlama CPU manual smoke succeeds: load deployment, list active deployment/model, call chat completions, unload deployment
 
 ---
 

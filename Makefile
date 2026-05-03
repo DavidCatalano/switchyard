@@ -59,8 +59,14 @@ quality: lint typecheck test
 	@echo "✅ All quality gates passed"
 
 # -------------------------------------------------------------------
-# Deployment Smoke Targets
+# API Curl Commands
 # -------------------------------------------------------------------
+api-deployments:
+	curl -s http://localhost:$(API_PORT)/deployments
+
+api-models:
+	curl -s http://localhost:$(API_PORT)/v1/models
+
 load-tinyllama-cpu:
 	curl -s -X POST http://localhost:$(API_PORT)/deployments/load \
 		-H 'Content-Type: application/json' \
@@ -79,9 +85,12 @@ docker-ps:
 
 docker-clean:
 	@echo "🧹 Stopping and removing switchyard containers..."
-	@ids=$$(docker ps -aq --filter "label=switchyard.managed=true"); \
+	@containers=$$(docker ps -a --filter "label=switchyard.managed=true" --format "{{.ID}} {{.Names}}"); \
+	ids=$$(printf '%s\n' "$$containers" | awk '{print $$1}'); \
+	names=$$(printf '%s\n' "$$containers" | awk '{print $$2}'); \
 	if [ -n "$$ids" ]; then \
-		docker rm -f $$ids; \
+		printf 'Removing:\n%s\n' "$$names"; \
+		docker rm -f $$ids >/dev/null; \
 	else \
 		echo "No switchyard-managed containers found"; \
 	fi
@@ -112,18 +121,26 @@ status:
 # -------------------------------------------------------------------
 help:
 	@echo "Switchyard Control Plane Commands:"
+	@echo ""
+	@echo "Development:"
 	@echo "  tunnel                 - Start SSH tunnel to remote Docker ($(SSH_HOST))"
 	@echo "  dev                    - Start FastAPI development server"
 	@echo "  test                   - Run pytest suite"
 	@echo "  lint                   - Run ruff linter"
 	@echo "  typecheck              - Run mypy type checking"
 	@echo "  quality                - Run lint + typecheck + tests (full gates)"
+	@echo "  status                 - Check tunnel and API server status"
+	@echo "  stop                   - Stop the API server"
+	@echo ""
+	@echo "API Curl Commands:"
+	@echo "  api-deployments        - GET /deployments"
+	@echo "  api-models             - GET /v1/models"
 	@echo "  load-tinyllama-cpu     - Load TinyLlama CPU deployment via API"
 	@echo "  unload-tinyllama-cpu   - Unload TinyLlama CPU deployment via API"
-	@echo "  status                 - Check tunnel and API server status"
+	@echo ""
+	@echo "Docker:"
 	@echo "  docker-ps              - List switchyard-managed containers"
 	@echo "  docker-clean           - Remove switchyard-managed containers"
-	@echo "  stop                   - Stop the API server"
 	@echo ""
 	@echo "Configuration (from $(ENV_FILE):)"
 	@echo "  SSH_HOST=$(SSH_HOST)        - Remote Docker host"
@@ -137,6 +154,7 @@ help:
 	@echo "  Terminal 2: make dev"
 
 .PHONY: tunnel dev test lint typecheck quality \
+	api-deployments api-models \
 	load-tinyllama-cpu unload-tinyllama-cpu \
 	docker-ps docker-clean stop status help
 .DEFAULT_GOAL := help
