@@ -56,6 +56,10 @@
   ruff/mypy clean.
 - 2026-05-03 — T5.11 done. Manual TinyLlama CPU smoke passed: load, deployment
   listing, `/v1/models`, chat completion, and unload all verified.
+- 2026-05-03 — Container name fix: vLLM containers now named
+  `switchyard-{deployment_name}` for operational readability. Labels remain
+  the authoritative ownership mechanism. 238 tests pass, 1 skipped, ruff/mypy
+  clean.
 
 ---
 
