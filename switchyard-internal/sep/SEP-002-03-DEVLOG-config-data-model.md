@@ -48,13 +48,18 @@
   `container_options` merge so user-supplied labels cannot overwrite
   `switchyard.*` keys. Test added. `docker-clean` no longer masks errors
   on empty state.
+- 2026-05-03 — T5.5+T5.6 done. `GET /v1/models` returns OpenAI-compatible list
+  of running deployments, filtered by `status == "running"` only. 237 tests
+  pass, 1 skipped, ruff/mypy clean.
+- 2026-05-03 — T5.7–T5.10 done. `.env` contract and planning artifacts audited;
+  old vLLM smoke Make targets remain absent. Final gates: 237 passed, 1 skipped,
+  ruff/mypy clean.
 
 ---
 
 ## Cold Start / Handoff
 
-Phase 5 closeout remains: runtime cleanup, label-based Docker operations,
-`GET /v1/models`, strict `.env` cleanup, final gates, and TinyLlama CPU smoke.
+Phase 5 closeout remains: manual TinyLlama CPU smoke.
 
 Pre-read:
 - `SEP-002-01-PRD-config-data-model.md`

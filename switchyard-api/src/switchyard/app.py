@@ -228,6 +228,26 @@ def _register_routes(app: FastAPI) -> None:
 
         return {"deployment_name": info.model_name, "status": info.status}
 
+    @app.get("/v1/models")
+    async def list_models() -> dict[str, Any]:
+        """OpenAI-compatible model discovery endpoint.
+
+        Returns active (running) deployments as a list of OpenAI-compatible
+        model objects. Only deployments with status "running" are included.
+        """
+        deployments = manager.state.list_deployments()
+        models = [
+            {
+                "id": info.model_name,
+                "object": "model",
+                "created": int(info.started_at.timestamp()),
+                "owned_by": "switchyard",
+            }
+            for info in sorted(deployments.values(), key=lambda item: item.model_name)
+            if info.status == "running"
+        ]
+        return {"object": "list", "data": models}
+
     @app.post("/v1/chat/completions")
     async def chat_completions(request: Request) -> Any:
         """OpenAI-compatible chat completions endpoint.

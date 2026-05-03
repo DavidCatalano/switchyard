@@ -2,7 +2,7 @@
 
 **Title**: Config Data Model Refactor
 **ID**: SEP-002-01-PRD-config-data-model
-**Status**: Draft
+**Status**: Agreed
 **Date**: 2026-04-30
 **Related Docs**: `SEP-002-04-CONSULT-host-environment-config.md`, `SEP-001-04-CONTEXT-vllm-config.md`
 **GitHub Issue**: https://github.com/DavidCatalano/switchyard/issues/2
@@ -34,10 +34,9 @@ This refactor replaces the legacy config shape with a durable entity model that 
 - Remove the legacy `global` / `runtime_defaults` / `models.<name>.runtime` schema
 - Update existing tests, examples, and docs to the new model
 
-**Boundary with SEP-003**: SEP-002 produces a resolved configuration data object. It does not change lifecycle APIs, wire adapters, or start containers by deployment ID. That belongs to SEP-003.
+**Boundary with SEP-003**: SEP-002 produces the entity config model, resolved deployment object, adapter wiring needed to launch resolved deployments, and MVP smoke-test hardening. Broader lifecycle orchestration, auto-start behavior, and public CRUD management APIs remain SEP-003/future scope.
 
 ### Non-Goals
-- Lifecycle behavior changes (wiring adapters, starting containers by deployment ID) — SEP-003
 - Public CRUD API for hosts, runtimes, models, or deployments (GH #5, #6)
 - Web UI (GH #8)
 - Hardware discovery / host diagnostics (GH #7)
@@ -100,7 +99,7 @@ Each section contains its respective entity definitions. References between enti
 
 **Done when:**
 - A config with hosts, runtimes, models, and deployments loads and validates successfully
-- A deployment referencing a model, runtime, and host resolves all references into a complete configuration data object (no lifecycle changes — that is SEP-003)
+- A deployment referencing a model, runtime, and host resolves all references into a complete configuration data object used by the adapter launch path
 - Reference validation catches broken cross-entity references (missing host, unknown runtime, etc.)
 - `.env` supplies process-local bootstrap values (`SWITCHYARD_CONFIG_PATH`, `SWITCHYARD_LOG_LEVEL`, `SWITCHYARD_API_HOST`, `SWITCHYARD_API_PORT`, `SWITCHYARD_ACTIVE_HOST`, `SWITCHYARD_DOCKER_HOST`); YAML config owns only hosts, runtimes, models, and deployments
 - The legacy `global` / `runtime_defaults` / per-model `runtime` schema is fully removed

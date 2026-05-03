@@ -298,3 +298,106 @@ class TestOpenAIProxy:
             json={},
         )
         assert response.status_code == 404
+
+
+class TestOpenAIModels:
+    """Tests for GET /v1/models (T5.5/T5.6)."""
+
+    def test_models_returns_empty_list(self) -> None:
+        """GET /v1/models returns empty list when no deployments are running."""
+        app = create_app()
+        response = TestClient(app).get("/v1/models")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["object"] == "list"
+        assert data["data"] == []
+
+    def test_models_includes_running_deployment(self) -> None:
+        """GET /v1/models includes a running deployment with correct shape."""
+        from datetime import UTC, datetime
+
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        started = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            started_at=started,
+            metadata={"served_model_name": "vllm-TestModel"},
+        )
+        app.state.manager.state.add(info)
+
+        response = TestClient(app).get("/v1/models")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["object"] == "list"
+        assert len(data["data"]) == 1
+        model = data["data"][0]
+        assert model["id"] == "test-deployment"
+        assert model["object"] == "model"
+        assert model["created"] == int(started.timestamp())
+        assert model["owned_by"] == "switchyard"
+
+    def test_models_excludes_non_running_deployments(self) -> None:
+        """GET /v1/models excludes loading and error deployments."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="running-dep",
+                backend="vllm",
+                port=9000,
+                status="running",
+                container_id="a1",
+            )
+        )
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="loading-dep",
+                backend="vllm",
+                port=9001,
+                status="loading",
+                container_id="b2",
+            )
+        )
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="error-dep",
+                backend="vllm",
+                port=9002,
+                status="error",
+                container_id="c3",
+            )
+        )
+
+        response = TestClient(app).get("/v1/models")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["id"] == "running-dep"
+
+    def test_models_uses_deployment_name_not_served_model_name(self) -> None:
+        """GET /v1/models uses deployment_name as id, not served_model_name."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="my-deployment-id",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={"served_model_name": "completely-different-name"},
+        )
+        app.state.manager.state.add(info)
+
+        response = TestClient(app).get("/v1/models")
+        data = response.json()
+        assert len(data["data"]) == 1
+        assert data["data"][0]["id"] == "my-deployment-id"
+        assert data["data"][0]["id"] != "completely-different-name"

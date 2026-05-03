@@ -106,12 +106,12 @@ deployments:
 - [x] **T5.2**: Load failure response: prevent Docker/container startup errors from bubbling as unstructured FastAPI tracebacks. `POST /deployments/load` must return structured JSON with a clear error message. Add a test for failed deployment load.
 - [x] **T5.3**: Container ownership labels: every container created by a Switchyard adapter must include labels identifying Switchyard ownership and resolved deployment context: `switchyard.managed=true`, `switchyard.deployment`, `switchyard.model`, `switchyard.runtime`, and `switchyard.host`. Add adapter tests asserting labels are passed to Docker.
 - [x] **T5.4**: Makefile Docker operations: remove network-based `docker-ps` behavior. Update `docker-ps` to filter by `label=switchyard.managed=true`; update `docker-clean` to target only Switchyard-managed containers by label. Remove `DOCKER_NETWORK` from Makefile help/config unless another target still needs it.
-- [ ] **T5.5**: OpenAI model discovery: add `GET /v1/models` returning an OpenAI-compatible list object for active chat-callable deployments only. Each item should include at least `id`, `object: "model"`, `created`, and `owned_by: "switchyard"`. Use the client-callable deployment ID as `id`.
-- [ ] **T5.6**: Tests for `GET /v1/models`: returns an empty OpenAI-compatible list when nothing is loaded; returns active deployment IDs after load/state registration; excludes configured-but-not-running deployments.
-- [ ] **T5.7**: Strict `.env` cleanup: keep `AppSettings` limited to `config_path`, `log_level`, `api_host`, `api_port`, `active_host`, and `docker_host`; keep `extra="forbid"`; remove stale references to deprecated `.env` keys from Makefile, tests, comments, and docs; confirm `.env.example` exactly matches supported settings.
-- [ ] **T5.8**: Planning/doc cleanup: update validation checkboxes based on actual gates, keep decision log statuses current, remove stale references to `make test-vllm-cpu`, avoid stale hardcoded port ranges, fix the PRD stale `placements` example if still present, and keep DEVLOG concise per `AGENTS.md`.
-- [ ] **T5.9**: Do not restore old `test-vllm-cpu` or `test-vllm-gpu` Make targets unless opt-in integration tests are explicitly reintroduced. The closeout smoke path is TinyLlama CPU load/chat/unload through the API.
-- [ ] **T5.10**: Final validation: from `switchyard-api/`, run `uv run pytest`, `uv run ruff check src tests`, and `uv run mypy src/switchyard`.
+- [x] **T5.5**: OpenAI model discovery: add `GET /v1/models` returning an OpenAI-compatible list object for active chat-callable deployments only. Each item should include at least `id`, `object: "model"`, `created`, and `owned_by: "switchyard"`. Use the client-callable deployment ID as `id`.
+- [x] **T5.6**: Tests for `GET /v1/models`: returns an empty OpenAI-compatible list when nothing is loaded; returns active deployment IDs after load/state registration; excludes configured-but-not-running deployments.
+- [x] **T5.7**: `.env` contract audit: `AppSettings`, `.env.example`, Makefile references, tests, comments, and docs reflect only the six supported bootstrap settings; unknown keys still fail via `extra="forbid"`.
+- [x] **T5.8**: Planning artifacts closeout: PLAN validation criteria and decision log reflect the final implementation; PRD/DEVLOG contain no stale schema or smoke-test references; DEVLOG remains concise per `AGENTS.md`.
+- [x] **T5.9**: Smoke-test command boundary: old `test-vllm-cpu` and `test-vllm-gpu` Make targets remain absent unless opt-in integration tests are explicitly reintroduced; TinyLlama CPU load/chat/unload is the supported manual smoke path.
+- [x] **T5.10**: Final quality gate record: capture the final passing results for `uv run pytest`, `uv run ruff check src tests`, and `uv run mypy src/switchyard` after Phase 5 is complete.
 - [ ] **T5.11**: Manual TinyLlama CPU smoke: restart `make dev`; run `make load-tinyllama-cpu`; confirm `GET /deployments` shows the deployment active; confirm `GET /v1/models` lists `tinyllama-1.1b-chat-vllm-cpu-trainbox`; call `POST /v1/chat/completions` with `model: "tinyllama-1.1b-chat-vllm-cpu-trainbox"`; run `make unload-tinyllama-cpu`.
 
 ---
@@ -175,16 +175,16 @@ lifecycle state keyed by deployment name.
 **Validation Commands**: See `AGENTS.md` Section "Quality Gates" for complete validation command list.
 
 ### Success Criteria Validation
-- [ ] A `config.yaml` with hosts, runtimes, models, and deployments loads and validates
-- [ ] A deployment referencing a model, runtime, and host resolves into a complete `ResolvedDeployment` data object
-- [ ] Reference validation catches broken cross-entity references (unknown host, missing runtime, etc.)
-- [ ] `.env` supplies process-local bootstrap values; YAML config owns only entity definitions; `.env` `docker_host` overrides the host's canonical definition for the active process
-- [ ] The legacy `global` / `runtime_defaults` / per-model `runtime` schema is fully removed; vLLM typed field validation is preserved in the new schema
-- [ ] No test or code path depends on the old config shape
-- [ ] All quality gates pass (pytest, ruff, mypy)
-- [ ] Runtime startup failures return structured API errors and release allocated ports
-- [ ] Switchyard-created containers are discoverable and cleanable by Switchyard labels, not Docker network names
-- [ ] `GET /v1/models` returns OpenAI-compatible active model discovery backed by active deployments
+- [x] A `config.yaml` with hosts, runtimes, models, and deployments loads and validates
+- [x] A deployment referencing a model, runtime, and host resolves into a complete `ResolvedDeployment` data object
+- [x] Reference validation catches broken cross-entity references (unknown host, missing runtime, etc.)
+- [x] `.env` supplies process-local bootstrap values; YAML config owns only entity definitions; `.env` `docker_host` overrides the host's canonical definition for the active process
+- [x] The legacy `global` / `runtime_defaults` / per-model `runtime` schema is fully removed; vLLM typed field validation is preserved in the new schema
+- [x] No test or code path depends on the old config shape
+- [x] All quality gates pass (pytest, ruff, mypy)
+- [x] Runtime startup failures return structured API errors and release allocated ports
+- [x] Switchyard-created containers are discoverable and cleanable by Switchyard labels, not Docker network names
+- [x] `GET /v1/models` returns OpenAI-compatible active model discovery backed by active deployments
 - [ ] TinyLlama CPU manual smoke succeeds: load deployment, list active deployment/model, call chat completions, unload deployment
 
 ---
