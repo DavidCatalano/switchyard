@@ -210,11 +210,13 @@ def _register_routes(app: FastAPI) -> None:
                 "port": info.port,
                 "container_id": info.container_id,
                 "started_at": info.started_at.isoformat(),
+                "health": "unknown",
             }
         except KeyError:
             return {
                 "deployment_name": deployment,
                 "status": "stopped",
+                "health": "unknown",
             }
 
     @app.post("/api/deployments/{deployment}/load", status_code=202)

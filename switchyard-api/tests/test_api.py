@@ -218,7 +218,7 @@ class TestApiDeploymentRoutes:
         assert nested.get("max_batch_size") == 256
 
     def test_status_known(self) -> None:
-        """GET /api/deployments/{deployment}/status returns status (known)."""
+        """GET /api/deployments/{deployment}/status returns status with health."""
         from switchyard.core.adapter import DeploymentInfo
 
         app = create_app()
@@ -233,7 +233,48 @@ class TestApiDeploymentRoutes:
 
         response = TestClient(app).get("/api/deployments/test-deployment/status")
         assert response.status_code == 200
-        assert response.json()["status"] == "running"
+        data = response.json()
+        assert data["status"] == "running"
+        assert data["health"] == "unknown"
+
+    def test_status_stopped_returns_health_unknown(self) -> None:
+        """Status endpoint returns health: unknown for stopped deployments."""
+        from switchyard.config.models import Config
+
+        config = Config.model_validate({
+            "hosts": {
+                "test-host": {
+                    "stores": {
+                        "models": {
+                            "host_path": "/data/models",
+                            "container_path": "/models",
+                        },
+                    },
+                    "port_range": [9000, 9100],
+                },
+            },
+            "runtimes": {"vllm": {"backend": "vllm"}},
+            "models": {
+                "test-model": {
+                    "source": {"store": "models", "path": "test-model"},
+                },
+            },
+            "deployments": {
+                "test-deployment": {
+                    "model": "test-model",
+                    "runtime": "vllm",
+                    "host": "test-host",
+                },
+            },
+        })
+        with patch("switchyard.app.ConfigLoader.load", return_value=config):
+            app = create_app()
+        # Deployment exists in config but has no live state -> stopped
+        response = TestClient(app).get("/api/deployments/test-deployment/status")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["status"] == "stopped"
+        assert data["health"] == "unknown"
 
     def test_status_unknown_returns_404(self) -> None:
         """GET /api/deployments/{deployment}/status returns 404 (unknown)."""
@@ -358,7 +399,7 @@ class TestApiDeploymentRoutes:
         assert response.status_code == 404
 
     def test_proxy_stopped_returns_400(self) -> None:
-        """POST /api/proxy/{deployment}/{path} returns 400 for stopped deployment."""
+        """POST /api/proxy/{deployment}/v1/{path} returns 400 for stopped deployment."""
         from switchyard.core.adapter import DeploymentInfo
 
         app = create_app()
@@ -371,7 +412,9 @@ class TestApiDeploymentRoutes:
         )
         app.state.manager.state.add(stopped_info)
 
-        response = TestClient(app).post("/api/proxy/test-deployment/models", json={})
+        response = TestClient(app).post(
+            "/api/proxy/test-deployment/v1/models", json={}
+        )
         assert response.status_code == 400
 
 
