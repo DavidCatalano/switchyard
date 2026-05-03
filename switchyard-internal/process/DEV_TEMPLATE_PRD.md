@@ -4,7 +4,7 @@
 **ID**: SEP-###-01-PRD-[feature-name] (### is next available SEP number)
 **Status**: Draft | In Progress | Complete
 **Date**: YYYY-MM-DD
-**Related Docs**: Link to CONTEXT, PLAN, ADRs, relevant specs
+**Related Docs**: Link to CONTEXT, PLAN, relevant specs
 **Dev Track**: [Track name] (`DEV_TRACK_*.md`) — note primary and supplemental if multiple apply
 
 ---

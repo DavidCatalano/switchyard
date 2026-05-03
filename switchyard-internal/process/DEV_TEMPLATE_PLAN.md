@@ -4,8 +4,7 @@
 **ID**: SEP-###-02-PLAN-[feature-name]
 **Status**: Draft | In Progress | Complete
 **Date**: YYYY-MM-DD
-**PRD**: SEP-###-01-PRD-[feature-name].md
-**ADR(s)**: [Optional links to ADR files if relevant]
+**PRD**: SEP-###-01-PRD-[feature-name].md (Optional for Lightweight. Delete if not needed.)
 
 ---
 

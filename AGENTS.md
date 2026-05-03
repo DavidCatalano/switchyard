@@ -69,6 +69,9 @@ sequencing, governance conventions, quality gates, and artifact management.
 
 > **User** holds the singular authority to advance to the next development
 > phase.
+> **Qwen and the Pi agentic framework** solely responsible for all coding 
+> tasks. **Codex** is used for architecture consultation, planning assistance
+> and code reviews.
 
 ### Two-Track Workflow
 

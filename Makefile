@@ -72,6 +72,11 @@ load-tinyllama-cpu:
 		-H 'Content-Type: application/json' \
 		-d '{"deployment":"tinyllama-1.1b-chat-vllm-cpu-trainbox"}'
 
+load-qwen3-27b-fp8:
+	curl -s -X POST http://localhost:$(API_PORT)/deployments/load \
+		-H 'Content-Type: application/json' \
+		-d '{"deployment":"qwen3-27b-fp8-vllm-trainbox"}'
+
 unload-tinyllama-cpu:
 	curl -s -X POST http://localhost:$(API_PORT)/deployments/unload \
 		-H 'Content-Type: application/json' \
@@ -136,6 +141,7 @@ help:
 	@echo "  api-deployments        - GET /deployments"
 	@echo "  api-models             - GET /v1/models"
 	@echo "  load-tinyllama-cpu     - Load TinyLlama CPU deployment via API"
+	@echo "  load-qwen3-27b-fp8     - Load Qwen 3.6 27B FP8 deployment via API"
 	@echo "  unload-tinyllama-cpu   - Unload TinyLlama CPU deployment via API"
 	@echo ""
 	@echo "Docker:"
@@ -155,6 +161,6 @@ help:
 
 .PHONY: tunnel dev test lint typecheck quality \
 	api-deployments api-models \
-	load-tinyllama-cpu unload-tinyllama-cpu \
+	load-tinyllama-cpu load-qwen3-27b-fp8 unload-tinyllama-cpu \
 	docker-ps docker-clean stop status help
 .DEFAULT_GOAL := help
