@@ -1,0 +1,21 @@
+[Unit]
+Description=Switchyard API control plane
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=switchyard
+Group=switchyard
+WorkingDirectory=/opt/switchyard/switchyard-api
+EnvironmentFile=/etc/switchyard/switchyard.env
+Environment=PATH=/home/switchyard/.local/bin:/usr/local/bin:/usr/bin:/bin
+RuntimeDirectory=switchyard
+RuntimeDirectoryMode=0750
+ExecStart=/usr/bin/env uv run uvicorn switchyard.app:create_app --factory --host ${SWITCHYARD_API_HOST} --port ${SWITCHYARD_API_PORT}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

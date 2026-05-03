@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+set -euo pipefail
+unset GIT_DIR
+
+DEPLOY_BRANCH=main
+BARE_REPO=/srv/git/switchyard.git
+DEPLOY=/opt/switchyard
+SERVICE=switchyard.service
+
+log() { echo "[deploy:switchyard] $*"; }
+
+SHOULD_DEPLOY=0
+while read -r _oldrev _newrev refname; do
+  if [ "$refname" = "refs/heads/$DEPLOY_BRANCH" ]; then
+    SHOULD_DEPLOY=1
+  fi
+done
+
+if [ "$SHOULD_DEPLOY" -ne 1 ]; then
+  log "No update to $DEPLOY_BRANCH; skipping deploy."
+  exit 0
+fi
+
+log "Deploying $DEPLOY_BRANCH to $DEPLOY"
+
+sudo -iu switchyard bash -lc "
+  export PATH=\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+  if [ ! -d '$DEPLOY/.git' ]; then
+    git clone '$BARE_REPO' '$DEPLOY'
+  fi
+
+  cd '$DEPLOY'
+  if git remote get-url origin >/dev/null 2>&1; then
+    git remote set-url origin '$BARE_REPO'
+  else
+    git remote add origin '$BARE_REPO'
+  fi
+  git fetch origin
+  git checkout -f '$DEPLOY_BRANCH'
+  git reset --hard 'origin/$DEPLOY_BRANCH'
+
+  cd switchyard-api
+  uv sync
+"
+
+sudo systemctl restart "$SERVICE"
+log "Deployment complete ($DEPLOY_BRANCH)."

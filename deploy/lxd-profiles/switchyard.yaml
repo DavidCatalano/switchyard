@@ -1,0 +1,30 @@
+config:
+  user.user-data: |
+    #cloud-config
+    ssh_pwauth: false
+    users:
+      - name: ubuntu
+        ssh_authorized_keys:
+          - <replace-with-your-ssh-public-key>
+        sudo: ALL=(ALL) NOPASSWD:ALL
+        shell: /bin/bash
+  user.network-config: |
+    version: 2
+    ethernets:
+      eth0:
+        dhcp4: false
+        addresses:
+          - <replace-with-static-ip-cidr>
+        nameservers:
+          addresses: [<replace-with-dns-server>]
+        routes:
+          - to: default
+            via: <replace-with-gateway-ip>
+description: "Switchyard container profile - static LAN IP, SSH enabled"
+devices:
+  eth0:
+    name: eth0
+    nictype: bridged
+    parent: <replace-with-bridge-name>
+    type: nic
+name: switchyard

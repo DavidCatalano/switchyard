@@ -92,6 +92,9 @@ uv run mypy src/switchyard
 switchyard/
 ├── AGENTS.md
 ├── Makefile
+├── deploy/
+│   ├── lxd-profiles/
+│   └── systemd/
 ├── switchyard-api/
 │   ├── config.yaml
 │   ├── pyproject.toml

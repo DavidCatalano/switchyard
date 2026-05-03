@@ -1,0 +1,21 @@
+[Unit]
+Description=Switchyard Docker socket SSH tunnel to %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=switchyard
+Group=switchyard
+EnvironmentFile=/etc/switchyard/tunnels/%i.env
+RuntimeDirectory=switchyard
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/rm -f ${LOCAL_SOCKET}
+ExecStart=/usr/bin/ssh -N -i ${SSH_IDENTITY} -o IdentitiesOnly=yes -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=3 -o StrictHostKeyChecking=yes -o StreamLocalBindUnlink=yes -L ${LOCAL_SOCKET}:/var/run/docker.sock ${REMOTE_USER}@${REMOTE_HOST}
+ExecStopPost=/usr/bin/rm -f ${LOCAL_SOCKET}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+
