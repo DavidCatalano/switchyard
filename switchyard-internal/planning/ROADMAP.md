@@ -142,7 +142,7 @@ Planning reference: `epic-webui.md`
 
 ### SEP-009 — Control Plane Deployment
 
-GitHub issue: not yet created
+GitHub issue: #10
 
 Deploy the Switchyard control plane application to an LXD container on the local
 network and add a second Docker-backed host, `devbox`, alongside `trainbox`.
