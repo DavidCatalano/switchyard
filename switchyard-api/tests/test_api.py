@@ -523,6 +523,9 @@ class TestReconciliationRoutes:
         response = TestClient(app).get("/api/deployments/test-deployment")
         data = response.json()
         assert data["status"] == "stopped"
+
+
+class TestLegacyRoutesRemoved:
     """Tests verifying old routes no longer match (T1.1-T1.6)."""
 
     def test_old_list_returns_404(self) -> None:

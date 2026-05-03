@@ -525,8 +525,48 @@ class TestReconcile:
         result = manager.reconcile("nonexistent", resolved)
         assert result is None
 
+    def test_adopted_metadata_preserves_served_model_name_override(self) -> None:
+        """Adopted served_model_name from runtime_args is authoritative.
 
-class TestReconcileIntegration:
+        If a deployment/runtime override changes served_model_name, adoption
+        must preserve that value instead of clobbering it with model_defaults.
+        """
+        container = _make_mock_container(status="running", host_port=9500)
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+
+        # model_defaults has one value, runtime_args override has another
+        resolved = _make_resolved(
+            deployment_name="test-deployment",
+            overrides={
+                "runtime_args": {"served_model_name": "override-name"},
+                "model_defaults": {"served_model_name": "default-name"},
+            },
+        )
+        result = manager.reconcile("test-deployment", resolved)
+
+        assert result is not None
+        # runtime_args value wins, not model_defaults
+        assert result.metadata.get("served_model_name") == "override-name"
+
+    def test_adopted_metadata_absent_served_model_name(self) -> None:
+        """Adopted metadata omits served_model_name when not in runtime_args."""
+        container = _make_mock_container(status="running", host_port=9500)
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+
+        resolved = _make_resolved(
+            deployment_name="test-deployment",
+            overrides={
+                "runtime_args": {},
+                "model_defaults": {"served_model_name": "default-name"},
+            },
+        )
+        result = manager.reconcile("test-deployment", resolved)
+
+        assert result is not None
+        # served_model_name should not be injected from model_defaults
+        assert "served_model_name" not in result.metadata
     """Lifecycle integration tests for reconciliation (T2.5)."""
 
     async def test_reconcile_adopts_running_container_on_load(
