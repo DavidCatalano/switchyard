@@ -120,3 +120,14 @@ def get_container_host_port(
     if bindings:
         return int(bindings[0]["HostPort"])
     return None
+
+
+def remove_container(container: _DockerContainer) -> None:
+    """Force-remove a Docker container.
+
+    Used to clean up stale exited/dead managed containers.
+
+    Args:
+        container: The Docker container to remove.
+    """
+    container.remove(force=True)

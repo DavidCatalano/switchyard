@@ -107,6 +107,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     app.state.config = config
 
     # Create lifecycle manager with port range from active host
+    from switchyard.core.docker import create_default_factory
     from switchyard.core.registry import AdapterRegistry
 
     registry = AdapterRegistry()
@@ -120,6 +121,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
         backend_host=backend_host,
         backend_scheme=backend_scheme,
         docker_network=docker_network,
+        docker_client_factory=create_default_factory(),
     )
 
     # Register endpoints
@@ -202,6 +204,15 @@ def _register_routes(app: FastAPI) -> None:
                 status_code=404,
                 detail=f"deployment {deployment!r} not found in config",
             )
+
+        # Reconcile: adopt any running container after API restart
+        # (don't clear existing state — that's load_model's job)
+        try:
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved, adopt_only=True)
+        except Exception:
+            pass  # Docker unreachable or config broken
+
         try:
             info = manager.state.get(deployment)
             return {
@@ -254,12 +265,25 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.post("/api/deployments/{deployment}/unload")
     async def unload_deployment(deployment: str) -> dict[str, str]:
-        """Unload a deployment."""
+        """Unload a deployment.
+
+        Reconciles with Docker first so that stopped running containers
+        after API restart are properly stopped rather than silently ignored.
+        """
         if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
                 detail=f"deployment {deployment!r} not found in config",
             )
+
+        # Reconcile first: if a running container exists after API restart,
+        # adopt it into state so it can be stopped
+        try:
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
+        except Exception:
+            pass  # Docker unreachable
+
         try:
             await manager.unload_model(deployment)
         except KeyError:
@@ -277,6 +301,14 @@ def _register_routes(app: FastAPI) -> None:
         The path is forwarded literally to the backend.
         Example: /api/proxy/deployment/v1/embeddings -> /v1/embeddings
         """
+        # Reconcile to adopt running containers after API restart
+        if deployment in config.deployments:
+            try:
+                resolved = resolve_deployment(config, deployment)
+                manager.reconcile(deployment, resolved, adopt_only=True)
+            except Exception:
+                pass  # Docker unreachable
+
         dep = _get_running_deployment(deployment, manager)
         backend_url = _backend_url(dep, config)
         body = await request.json()
@@ -291,7 +323,18 @@ def _register_routes(app: FastAPI) -> None:
 
         Returns active (running) deployments as a list of OpenAI-compatible
         model objects. Only deployments with status "running" are included.
+
+        Adopts any running containers after API restart without clearing
+        existing in-memory state.
         """
+        # Adopt any running containers after API restart
+        for dep_name in config.deployments:
+            try:
+                resolved = resolve_deployment(config, dep_name)
+                manager.reconcile(dep_name, resolved, adopt_only=True)
+            except Exception:
+                pass  # Docker unreachable or config broken
+
         deployments = manager.state.list_deployments()
         models = [
             {
@@ -315,6 +358,15 @@ def _register_routes(app: FastAPI) -> None:
         """
         body = await request.json()
         deployment_name = body.get("model", "")
+
+        # Reconcile to adopt running containers after API restart
+        if deployment_name in config.deployments:
+            try:
+                resolved = resolve_deployment(config, deployment_name)
+                manager.reconcile(deployment_name, resolved, adopt_only=True)
+            except Exception:
+                pass  # Docker unreachable
+
         deployment = _get_running_deployment(deployment_name, manager)
         backend_url = _backend_url(deployment, config)
         backend_body = dict(body)

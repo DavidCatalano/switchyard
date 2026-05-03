@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import docker
 
@@ -22,11 +22,15 @@ from switchyard.core.docker import (
     find_container_by_labels,
     get_container_host_port,
     get_container_status,
+    remove_container,
 )
 from switchyard.core.orphan import OrphanDetector, _DockerClient
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
 from switchyard.core.state import DeploymentStateManager
+
+if TYPE_CHECKING:
+    from switchyard.core.docker import _DockerContainer
 
 if TYPE_CHECKING:
     from switchyard.core.docker import _DockerContainer
@@ -83,6 +87,7 @@ class LifecycleManager:
 
     def reconcile(
         self, deployment_name: str, resolved: ResolvedDeployment,
+        *, adopt_only: bool = False,
     ) -> DeploymentInfo | None:
         """Reconcile in-memory state with actual Docker container state.
 
@@ -99,9 +104,15 @@ class LifecycleManager:
         4. Container gone → clear in-memory state, release port, cancel
            health task, return None.
 
+        If ``adopt_only=True``, only outcome 1 and 2 apply — existing
+        in-memory state is never cleared. This is suitable for routes
+        that just need to adopt a running container after API restart.
+
         Args:
             deployment_name: Logical deployment identifier.
             resolved: Fully resolved deployment configuration.
+            adopt_only: If True, only adopt running containers; never
+                clear existing in-memory state.
 
         Returns:
             ``DeploymentInfo`` if the deployment is running, ``None``
@@ -119,8 +130,9 @@ class LifecycleManager:
         container = self._find_container(client, deployment_name)
 
         if container is None:
-            # Container gone → clear any stale state
-            self._clear_deployment(deployment_name)
+            # Container gone → clear any stale state (unless adopt_only)
+            if not adopt_only:
+                self._clear_deployment(deployment_name)
             return None
 
         status = self._get_container_status(container)
@@ -128,8 +140,10 @@ class LifecycleManager:
         if status == "running":
             return self._handle_running(deployment_name, container, resolved)
 
-        # exited, dead, or other non-running state
-        self._clear_deployment(deployment_name)
+        # exited, dead, or other non-running state → clear + remove
+        if not adopt_only:
+            remove_container(container)
+            self._clear_deployment(deployment_name)
         return None
 
     def _find_container(
@@ -147,7 +161,7 @@ class LifecycleManager:
         deployment_name: str,
         container: _DockerContainer,
         resolved: ResolvedDeployment,
-    ) -> DeploymentInfo:
+    ) -> DeploymentInfo | None:
         """Handle a running container found during reconciliation."""
         existing = self.state._deployments.get(deployment_name)
 
@@ -161,8 +175,14 @@ class LifecycleManager:
         internal_port = resolved.internal_port
         port = get_container_host_port(container, internal_port)
         if port is None:
-            # Can't determine port — treat as gone
-            return self._adopt_container(deployment_name, container, resolved)
+            # Can't determine host port — can't safely adopt.
+            # Container is running but we can't route to it.
+            logger.warning(
+                "reconcile: running container for %s has no bound host "
+                "port (internal=%d) — skipping adoption",
+                deployment_name, internal_port,
+            )
+            return None
 
         # Reserve the observed port
         try:
@@ -176,7 +196,7 @@ class LifecycleManager:
             port=port,
             status="running",
             container_id=container.short_id,
-            metadata=dict(resolved.runtime_args),
+            metadata=self._build_adopted_metadata(resolved),
         )
         self.state.add(info)
         logger.info(
@@ -186,23 +206,22 @@ class LifecycleManager:
         )
         return info
 
-    def _adopt_container(
-        self,
-        deployment_name: str,
-        container: _DockerContainer,
-        resolved: ResolvedDeployment,
-    ) -> DeploymentInfo:
-        """Adopt a running container even when host port can't be resolved."""
-        info = DeploymentInfo(
-            model_name=deployment_name,
-            backend=resolved.backend,
-            port=resolved.internal_port,
-            status="running",
-            container_id=container.short_id,
-            metadata=dict(resolved.runtime_args),
-        )
-        self.state.add(info)
-        return info
+    def _build_adopted_metadata(
+        self, resolved: ResolvedDeployment,
+    ) -> dict[str, Any]:
+        """Build metadata dict for an adopted deployment.
+
+        Includes the fields needed by _backend_url() and
+        chat_completions model rewriting.
+        """
+        metadata: dict[str, Any] = dict(resolved.runtime_args)
+        metadata["backend_host"] = resolved.backend_host
+        metadata["backend_scheme"] = resolved.backend_scheme
+        if resolved.model_defaults and "served_model_name" in resolved.model_defaults:
+            metadata["served_model_name"] = resolved.model_defaults[
+                "served_model_name"
+            ]
+        return metadata
 
     def _clear_deployment(self, deployment_name: str) -> None:
         """Clear in-memory state, release port, cancel health task."""
