@@ -1,4 +1,96 @@
-global:
-  docker_network: model-runtime
-  base_port: 8000
-  log_level: debug
+hosts:
+  trainbox:
+    backend_host: trainbox
+    docker_host: tcp://127.0.0.1:2375
+    docker_network: ai_net
+    port_range: [18000, 18100]
+    accelerators:
+      - id: "0"
+        type: cuda
+        vram_gb: 24
+      - id: "1"
+        type: cuda
+        vram_gb: 24
+    stores:
+      models:
+        host_path: /data/LLM/oobabooga/models
+        container_path: /data/LLM/oobabooga/models
+        mode: ro
+      hf_cache:
+        host_path: /data/LLM/huggingface
+        container_path: /data/LLM/huggingface
+        mode: rw
+    container_defaults:
+      environment:
+        HF_HOME: /data/LLM/huggingface
+        PYTORCH_CUDA_ALLOC_CONF: expandable_segments:True
+        OMP_NUM_THREADS: "1"
+        VLLM_MEMORY_PROFILER_ESTIMATE_CUDAGRAPHS: "1"
+      options:
+        ipc: host
+        ulimits:
+          memlock:
+            soft: -1
+            hard: -1
+
+runtimes:
+  vllm:
+    backend: vllm
+    image: vllm/vllm-openai:latest
+    defaults:
+      dtype: auto
+      enable_prefix_caching: true
+    container_defaults:
+      internal_port: 7113
+  vllm-cpu:
+    backend: vllm
+    image: vllm/vllm-openai-cpu:latest-x86_64
+    defaults:
+      device: cpu
+      dtype: bfloat16
+    container_defaults:
+      internal_port: 8000
+
+models:
+  qwen3-27b-fp8:
+    source:
+      store: models
+      path: Qwen3.6-27B-FP8
+    defaults:
+      served_model_name: vllm-Qwen3.6-27B
+      reasoning_parser: qwen3
+      tool_call_parser: qwen3_coder
+  tinyllama-1.1b-chat:
+    source:
+      store: models
+      path: TinyLlama-1.1B-Chat-v1.0
+    defaults:
+      served_model_name: tinyllama-1.1b-chat
+
+deployments:
+  qwen3-27b-fp8-vllm-trainbox:
+    model: qwen3-27b-fp8
+    runtime: vllm
+    host: trainbox
+    runtime_overrides:
+      max_model_len: 100000
+      max_num_seqs: 4
+      tensor_parallel_size: 2
+      gpu_memory_utilization: 0.97
+      kv_cache_dtype: fp8_e4m3
+      enable_auto_tool_choice: true
+      disable_custom_all_reduce: true
+      speculative_config:
+        method: qwen3_next_mtp
+        num_speculative_tokens: 2
+    placement:
+      accelerator_ids: ["0", "1"]
+    container_overrides:
+      environment:
+        CUDA_VISIBLE_DEVICES: "0,1"
+  tinyllama-1.1b-chat-vllm-cpu-trainbox:
+    model: tinyllama-1.1b-chat
+    runtime: vllm-cpu
+    host: trainbox
+    runtime_overrides:
+      max_model_len: 2048

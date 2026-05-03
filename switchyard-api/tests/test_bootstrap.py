@@ -3,9 +3,8 @@
 Validates:
 - Bootstrap verifies Docker connectivity
 - Bootstrap runs orphan detection and adopts results
-- Bootstrap auto-starts models with auto_start=true
-- Bootstrap skips models with auto_start=false
 - Bootstrap fails if Docker is unreachable
+- Auto-start is a stub (SEP-003)
 """
 
 from __future__ import annotations
@@ -15,33 +14,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 import pytest_asyncio
 
-from switchyard.config.models import (
-    Config,
-    ControlConfig,
-    ModelConfig,
-    VLLMRuntimeConfig,
-)
+from switchyard.config.models import Config
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
 from switchyard.core.lifecycle import LifecycleManager
 from switchyard.core.orphan import OrphanResults
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
-
-
-def _make_config(*models: tuple[str, str, bool]) -> Config:
-    """Build a Config with the given (model_name, backend, auto_start) pairs."""
-    model_entries = {}
-    for name, backend, auto in models:
-        model_entries[name] = ModelConfig(
-            backend=backend,
-            image=f"{backend}:latest",
-            runtime=VLLMRuntimeConfig(repo=f"mock/{name}"),
-            control=ControlConfig(auto_start=auto),
-        )
-    return Config(
-        global_config={"base_port": 8000, "log_level": "info"},
-        models=model_entries,
-    )
 
 
 class _MockAdapter(BackendAdapter):
@@ -51,10 +29,10 @@ class _MockAdapter(BackendAdapter):
         self.starts: list[DeploymentInfo] = []
         self.stops: list[DeploymentInfo] = []
 
-    def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
+    def start(self, resolved, port: int) -> DeploymentInfo:  # noqa: ANN001
         info = DeploymentInfo(
-            model_name="test",
-            backend=model_config.backend,
+            model_name=resolved.deployment_name,
+            backend=resolved.backend,
             port=port,
             status="loading",
             container_id=f"mock-{port}",
@@ -82,16 +60,45 @@ async def manager() -> LifecycleManager:
     )
 
 
+@pytest.fixture
+def config() -> Config:
+    return Config.model_validate({
+        "hosts": {
+            "test-host": {
+                "stores": {
+                    "models": {
+                        "host_path": "/data/models",
+                        "container_path": "/models",
+                    },
+                },
+            },
+        },
+        "runtimes": {"vllm": {"backend": "vllm"}},
+        "models": {
+            "test-model": {
+                "source": {"store": "models", "path": "test-model"},
+            },
+        },
+        "deployments": {
+            "test-deployment": {
+                "model": "test-model",
+                "runtime": "vllm",
+                "host": "test-host",
+            },
+        },
+    })
+
+
 class TestBootstrap:
     """Startup bootstrap sequence tests."""
 
     async def test_bootstrap_adopt_orphans(
-        self, manager: LifecycleManager,
+        self, manager: LifecycleManager, config: Config,
     ) -> None:
         """Running orphans are adopted into state."""
         orphan = DeploymentInfo(
-            model_name="orphan-model",
-            backend="mock",
+            model_name="test-deployment",
+            backend="vllm",
             port=9600,
             status="running",
             container_id="orphan-123",
@@ -102,48 +109,24 @@ class TestBootstrap:
             adopted=[orphan], removed=[],
         )
 
-        config = _make_config(("orphan-model", "mock", False))
-
         with patch(
             "switchyard.core.lifecycle.OrphanDetector", mock_detector,
         ):
             await manager.bootstrap(config, mock_docker)
 
-        stored = manager.state.get("orphan-model")
+        stored = manager.state.get("test-deployment")
         assert stored.status == "running"
         assert stored.port == 9600
 
-    async def test_bootstrap_auto_start_models(
-        self, manager: LifecycleManager,
-    ) -> None:
-        """Models with auto_start=true are loaded on bootstrap."""
-        mock_docker = MagicMock()
-        mock_detector = MagicMock()
-        mock_detector.return_value.scan.return_value = OrphanResults(
-            adopted=[], removed=[],
-        )
-
-        config = _make_config(("auto-model", "mock", True))
-
-        with patch(
-            "switchyard.core.lifecycle.OrphanDetector", mock_detector,
-        ):
-            await manager.bootstrap(config, mock_docker)
-
-        stored = manager.state.get("auto-model")
-        assert stored.status == "loading"
-
     async def test_bootstrap_skip_non_auto(
-        self, manager: LifecycleManager,
+        self, manager: LifecycleManager, config: Config,
     ) -> None:
-        """Models with auto_start=false are not started."""
+        """Auto-start is a stub (SEP-003). No deployments are auto-started."""
         mock_docker = MagicMock()
         mock_detector = MagicMock()
         mock_detector.return_value.scan.return_value = OrphanResults(
             adopted=[], removed=[],
         )
-
-        config = _make_config(("manual-model", "mock", False))
 
         with patch(
             "switchyard.core.lifecycle.OrphanDetector", mock_detector,
@@ -151,26 +134,25 @@ class TestBootstrap:
             await manager.bootstrap(config, mock_docker)
 
         names = manager.state.list_deployments()
-        assert "manual-model" not in names
+        assert "test-deployment" not in names
 
     async def test_bootstrap_docker_unreachable(
-        self, manager: LifecycleManager,
+        self, manager: LifecycleManager, config: Config,
     ) -> None:
         """Bootstrap raises if Docker daemon is not accessible."""
         mock_docker = MagicMock()
         mock_docker.ping.return_value = False
-        config = _make_config()
 
         with pytest.raises(ConnectionError, match="docker"):
             await manager.bootstrap(config, mock_docker)
 
     async def test_bootstrap_adopted_skip_auto_start(
-        self, manager: LifecycleManager,
+        self, manager: LifecycleManager, config: Config,
     ) -> None:
-        """Adopted orphans are not auto-started again."""
+        """Adopted orphans are recorded, not started twice."""
         orphan = DeploymentInfo(
-            model_name="existing-model",
-            backend="mock",
+            model_name="test-deployment",
+            backend="vllm",
             port=9600,
             status="running",
             container_id="orphan-456",
@@ -181,14 +163,11 @@ class TestBootstrap:
             adopted=[orphan], removed=[],
         )
 
-        config = _make_config(("existing-model", "mock", True))
-
         with patch(
             "switchyard.core.lifecycle.OrphanDetector", mock_detector,
         ):
             await manager.bootstrap(config, mock_docker)
 
-        # Should be adopted once, not started twice
-        stored = manager.state.get("existing-model")
+        stored = manager.state.get("test-deployment")
         assert stored.status == "running"
         assert stored.port == 9600

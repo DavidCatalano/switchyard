@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
-from switchyard.config.models import ModelConfig
+from switchyard.config.models import ResolvedDeployment
 
 DeploymentStatus = str
 _STATUS_VALUES = ("running", "stopped", "loading", "error")
@@ -57,11 +57,11 @@ class BackendAdapter(abc.ABC):
     """
 
     @abc.abstractmethod
-    def start(self, model_config: ModelConfig, port: int) -> DeploymentInfo:
-        """Start a backend container for the given model.
+    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
+        """Start a backend container for the given deployment.
 
         Args:
-            model_config: Full model configuration (runtime, resources, etc.).
+            resolved: Fully resolved deployment configuration.
             port: Host port to bind the container to.
 
         Returns:

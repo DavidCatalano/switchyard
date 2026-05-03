@@ -79,6 +79,9 @@ class OrphanDetector:
         adopted: list[DeploymentInfo] = []
         removed: list[str] = []
 
+        # Build a set of known deployment names for matching
+        deployment_names = set(self._config.deployments.keys())
+
         containers = self._docker.containers.list(all=True)
 
         for container in containers:
@@ -87,13 +90,10 @@ class OrphanDetector:
             if not match:
                 continue
 
-            model_name, backend, _instance = match.groups()
+            deployment_name, backend, _instance = match.groups()
 
-            # Only handle containers for configured models
-            if model_name not in self._config.models:
-                continue
-            model_config = self._config.models[model_name]
-            if model_config.backend != backend:
+            # Only handle containers for configured deployments
+            if deployment_name not in deployment_names:
                 continue
 
             status = container.attrs["State"]["Status"]
@@ -106,7 +106,7 @@ class OrphanDetector:
                     )
                     continue
                 info = DeploymentInfo(
-                    model_name=model_name,
+                    model_name=deployment_name,
                     backend=backend,
                     port=port,
                     status="running",
@@ -114,8 +114,8 @@ class OrphanDetector:
                 )
                 adopted.append(info)
                 logger.info(
-                    "adopted orphan %s (model=%s port=%d)",
-                    name, model_name, port,
+                    "adopted orphan %s (deployment=%s port=%d)",
+                    name, deployment_name, port,
                 )
 
             elif status in ("exited", "dead", "created"):

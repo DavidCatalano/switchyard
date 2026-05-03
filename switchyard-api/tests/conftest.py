@@ -11,8 +11,8 @@ import pytest
 def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
     """Isolate tests from the actual .env file by patching AppSettings.
 
-    Tests that need real env var resolution (those setting SWITCHYARD_* in
-    os.environ) skip isolation via the ``no_isolate`` marker.
+    Tests that need real env var resolution skip isolation via the
+    ``no_isolate`` marker.
     """
     has_marker = any(
         mark.name == "no_isolate"
@@ -22,19 +22,23 @@ def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
         yield
         return
 
-    mock_settings = MagicMock()
-    for attr in (
+    # AppSettings — patched at every import site so resolve_deployment()
+    # and other code paths also get the mock.
+    attrs = (
         "config_path",
-        "base_port",
         "log_level",
+        "api_host",
+        "api_port",
+        "active_host",
         "docker_host",
-        "backend_host",
-        "backend_scheme",
-        "docker_network",
-        "health_interval_seconds",
-        "health_timeout_seconds",
-    ):
-        setattr(mock_settings, attr, None)
+    )
+    mock = MagicMock()
+    for attr in attrs:
+        setattr(mock, attr, None)
 
-    with patch("switchyard.config.loader.AppSettings", return_value=mock_settings):
+    with patch(
+        "switchyard.config.models.AppSettings", return_value=mock,
+    ), patch(
+        "switchyard.config.loader.AppSettings", return_value=mock,
+    ):
         yield

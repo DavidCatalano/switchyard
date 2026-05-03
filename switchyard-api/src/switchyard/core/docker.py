@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import docker
 
-from switchyard.config.loader import AppSettings
+from switchyard.config.models import AppSettings
 
 
 def get_docker_client() -> docker.DockerClient:

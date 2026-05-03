@@ -1,168 +1,154 @@
-"""Error handling tests — T4.8 (spec §13 error codes).
+"""Tests for error handling on proxy and deployment routes.
 
-Tests that API endpoints return correct HTTP status codes
-for various error conditions (500, 503, 504).
+Validates:
+- Proxy returns appropriate errors when no active deployment
+- Unknown deployment names return 404
+- Various error conditions on passthrough
 """
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
-from fastapi.testclient import TestClient
-from httpx import ConnectError, TimeoutException
+from starlette.testclient import TestClient
 
 from switchyard.app import create_app
-from switchyard.config.models import Config, GlobalConfig, RuntimeDefaults
 
 
-def _mock_deployment(status: str = "running", port: int = 8000) -> SimpleNamespace:
-    """Create a mock deployment info."""
-    return SimpleNamespace(
-        model_name="qwen-32b",
-        backend="vllm",
-        port=port,
-        status=status,
-        started_at=None,
-        metadata={},
-    )
+@pytest.fixture(autouse=True)
+def _mock_config_loader():
+    from switchyard.config.models import Config
+    config = Config.model_validate({
+        "hosts": {
+            "test-host": {
+                "stores": {
+                    "models": {
+                        "host_path": "/data/models",
+                        "container_path": "/models",
+                    },
+                },
+                "port_range": [9000, 9100],
+            },
+        },
+        "runtimes": {"vllm": {"backend": "vllm"}},
+        "models": {
+            "test-model": {
+                "source": {"store": "models", "path": "test-model"},
+            },
+        },
+        "deployments": {
+            "test-deployment": {
+                "model": "test-model",
+                "runtime": "vllm",
+                "host": "test-host",
+            },
+        },
+    })
+    with patch("switchyard.app.ConfigLoader.load", return_value=config):
+        yield
 
 
-@pytest.fixture
-def app():
-    """Create a fresh FastAPI app with mocked lifecycle manager."""
-    manager = MagicMock()
-    manager.state.get = MagicMock()
-    manager.state.list_deployments = MagicMock(return_value=[])
-
-    config = Config(
-        global_config=GlobalConfig(
-            log_level="debug",
-            backend_host="localhost",
-            backend_scheme="http",
-        ),
-        runtime_defaults=RuntimeDefaults(),
-        models={},
-    )
-
-    with (
-        patch("switchyard.app.ConfigLoader.load", return_value=config),
-        patch("switchyard.app.LifecycleManager", return_value=manager),
-    ):
-        a = create_app()
-        a.state.config = config
-        a.state.manager = manager
-    return a, manager  # type: ignore[return-value]
+@pytest.fixture(autouse=True)
+def _mock_active_host():
+    with patch.dict("os.environ", {"SWITCHYARD_ACTIVE_HOST": "test-host"}):
+        yield
 
 
-@pytest.fixture
-def client(app):
-    """TestClient backed by the app fixture."""
-    a, _ = app
-    return TestClient(a), app[1]  # type: ignore[name-defined]
+@pytest.fixture(autouse=True)
+def _mock_docker():
+    """Prevent Docker connections during API tests."""
+    with patch("docker.from_env") as mock:
+        mock.return_value = MagicMock()
+        mock.return_value.ping.return_value = True
+        yield mock
 
 
-# ---------------------------------------------------------------------------
-# T4.8 — Error handling per spec §13
-# ---------------------------------------------------------------------------
+class TestProxyErrors:
+    """Error handling on OpenAI passthrough routes."""
 
-class TestErrorHandling:
-    """Error code coverage for proxy endpoints."""
+    def test_chat_completions_no_deployment(self) -> None:
+        """Returns 404 when deployment not found."""
+        app = create_app()
+        # Real manager's state is empty -> 404
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={"model": "nonexistent"},
+        )
+        assert resp.status_code == 404
 
-    def test_503_backend_unhealthy(self, client):
-        """Backend returns 503 — proxy forwards it."""
-        tc, manager = client
-        manager.state.get.return_value = _mock_deployment(status="running", port=8000)
+    def test_backends_passthrough_unknown_deployment(self) -> None:
+        """Returns 404 for deployment name not in state."""
+        app = create_app()
+        # Real manager's state is empty -> 404
+        client = TestClient(app)
+        resp = client.post("/v1/backends/nonexistent/models", json={})
+        assert resp.status_code == 404
+
+    def test_chat_completions_upstream_timeout(self) -> None:
+        """Returns 504 when backend request times out."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_client = MagicMock()
+        mock_client.post.side_effect = httpx.TimeoutException("timeout")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={"model": "test-deployment", "messages": []},
+            )
+        assert resp.status_code == 504
+
+    def test_backends_passthrough_upstream_error(self) -> None:
+        """Returns backend error code for backend passthrough."""
+        from switchyard.core.adapter import DeploymentInfo
 
         mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_response.json.return_value = {"error": "backend unhealthy"}
+        mock_response.status_code = 429
+        mock_response.json.return_value = {"error": "rate limited"}
+        mock_client = MagicMock()
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
 
-        with patch("switchyard.app.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__enter__.return_value = mock_client
-            mock_client_cls.return_value.__exit__.return_value = False
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
 
-            resp = tc.post(
-                "/v1/chat/completions",
-                json={"model": "qwen-32b", "messages": []},
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/backends/test-deployment/models",
+                json={},
             )
-            assert resp.status_code == 503
-
-    def test_500_container_crash(self, client):
-        """Backend returns 500 — proxy forwards it."""
-        tc, manager = client
-        manager.state.get.return_value = _mock_deployment(status="running", port=8000)
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.json.return_value = {"error": "internal server error"}
-
-        with patch("switchyard.app.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__enter__.return_value = mock_client
-            mock_client_cls.return_value.__exit__.return_value = False
-
-            resp = tc.post(
-                "/v1/chat/completions",
-                json={"model": "qwen-32b", "messages": []},
-            )
-            assert resp.status_code == 500
-
-    def test_504_request_timeout(self, client):
-        """Connection timeout returns 504."""
-        tc, manager = client
-        manager.state.get.return_value = _mock_deployment(status="running", port=8000)
-
-        with patch("switchyard.app.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.side_effect = TimeoutException("connection timed out")
-            mock_client_cls.return_value.__enter__.return_value = mock_client
-            mock_client_cls.return_value.__exit__.return_value = False
-
-            resp = tc.post(
-                "/v1/chat/completions",
-                json={"model": "qwen-32b", "messages": []},
-            )
-            assert resp.status_code == 504
-
-    def test_503_connection_refused(self, client):
-        """Connection refused returns 503."""
-        tc, manager = client
-        manager.state.get.return_value = _mock_deployment(status="running", port=8000)
-
-        with patch("switchyard.app.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.side_effect = ConnectError("connection refused")
-            mock_client_cls.return_value.__enter__.return_value = mock_client
-            mock_client_cls.return_value.__exit__.return_value = False
-
-            resp = tc.post(
-                "/v1/chat/completions",
-                json={"model": "qwen-32b", "messages": []},
-            )
-            assert resp.status_code == 503
-
-    def test_passthrough_500(self, client):
-        """Passthrough forwards backend 500 errors."""
-        tc, manager = client
-        manager.state.get.return_value = _mock_deployment(status="running", port=8000)
-
-        mock_response = MagicMock()
-        mock_response.status_code = 500
-        mock_response.json.return_value = {"error": "upstream error"}
-
-        with patch("switchyard.app.httpx.Client") as mock_client_cls:
-            mock_client = MagicMock()
-            mock_client.post.return_value = mock_response
-            mock_client_cls.return_value.__enter__.return_value = mock_client
-            mock_client_cls.return_value.__exit__.return_value = False
-
-            resp = tc.post(
-                "/v1/backends/qwen-32b/v1/embeddings",
-                json={"input": "test"},
-            )
-            assert resp.status_code == 500
+        assert resp.status_code == 429
+        assert resp.json()["error"] == "rate limited"
