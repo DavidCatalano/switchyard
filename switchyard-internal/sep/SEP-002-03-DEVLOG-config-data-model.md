@@ -40,6 +40,14 @@
   catch from broad `Exception` to `RuntimeError` per adapter contract; boundary
   test added so non-RuntimeError bugs surface as real server errors. 231 passed,
   1 skipped, gates clean.
+- 2026-05-02 — T5.3+T5.4 done. Containers now carry `switchyard.*` ownership
+  labels. Makefile `docker-ps` and `docker-clean` switched from network/name
+  filtering to `label=switchyard.managed=true`; `DOCKER_NETWORK` variable
+  removed. 232 passed, 1 skipped, gates clean.
+- 2026-05-02 — T5.3 hardening: labels are now force-applied after
+  `container_options` merge so user-supplied labels cannot overwrite
+  `switchyard.*` keys. Test added. `docker-clean` no longer masks errors
+  on empty state.
 
 ---
 

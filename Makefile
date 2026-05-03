@@ -16,7 +16,6 @@ _env_api_port := $(shell grep -s '^SWITCHYARD_API_PORT=' $(ENV_FILE) | cut -d= -
 # Command-line ?= takes precedence over .env-sourced values
 SSH_HOST       ?= trainbox
 DOCKER_HOST    ?= $(or $(_env_docker),)
-DOCKER_NETWORK ?= model-runtime
 API_HOST       ?= $(or $(_env_api_host),0.0.0.0)
 API_PORT       ?= $(or $(_env_api_port),8000)
 
@@ -76,12 +75,16 @@ unload-tinyllama-cpu:
 # Docker
 # -------------------------------------------------------------------
 docker-ps:
-	docker ps --filter "network=$(DOCKER_NETWORK)" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+	docker ps --filter "label=switchyard.managed=true" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
 docker-clean:
 	@echo "🧹 Stopping and removing switchyard containers..."
-	-docker rm -f $(shell docker ps -aq --filter "name=switchyard") 2>/dev/null || true
-	@echo "✅ Cleaned"
+	@ids=$$(docker ps -aq --filter "label=switchyard.managed=true"); \
+	if [ -n "$$ids" ]; then \
+		docker rm -f $$ids; \
+	else \
+		echo "No switchyard-managed containers found"; \
+	fi
 
 # -------------------------------------------------------------------
 # Service Management
@@ -118,15 +121,14 @@ help:
 	@echo "  load-tinyllama-cpu     - Load TinyLlama CPU deployment via API"
 	@echo "  unload-tinyllama-cpu   - Unload TinyLlama CPU deployment via API"
 	@echo "  status                 - Check tunnel and API server status"
-	@echo "  docker-ps              - List containers on $(DOCKER_NETWORK) network"
-	@echo "  docker-clean           - Remove orphan switchyard containers"
+	@echo "  docker-ps              - List switchyard-managed containers"
+	@echo "  docker-clean           - Remove switchyard-managed containers"
 	@echo "  stop                   - Stop the API server"
 	@echo ""
 	@echo "Configuration (from $(ENV_FILE):)"
 	@echo "  SSH_HOST=$(SSH_HOST)        - Remote Docker host"
 	@echo "  DOCKER_PORT=$(DOCKER_PORT)  - Local port for SSH tunnel"
 	@echo "  DOCKER_HOST=$(DOCKER_HOST)  - Docker SDK endpoint (empty = local Docker)"
-	@echo "  DOCKER_NETWORK=$(DOCKER_NETWORK) - Container network"
 	@echo "  API_HOST=$(API_HOST)        - FastAPI server bind address"
 	@echo "  API_PORT=$(API_PORT)        - FastAPI server port"
 	@echo ""

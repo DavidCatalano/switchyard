@@ -201,7 +201,16 @@ class VLLMAdapter(BackendAdapter):
         if runtime.hf_token:
             environment["HF_TOKEN"] = runtime.hf_token
 
-        # Resource limits
+        # Container ownership labels — identify Switchyard-managed containers.
+        # Defined here so they can be force-applied after user container_options merge.
+        _switchyard_labels: dict[str, str] = {
+            "switchyard.managed": "true",
+            "switchyard.deployment": resolved.deployment_name,
+            "switchyard.model": resolved.model_name,
+            "switchyard.runtime": resolved.runtime_name,
+            "switchyard.host": resolved.host_name,
+        }
+
         kwargs: dict[str, Any] = {
             "image": resolved.image,
             "ports": {internal_port: port},
@@ -221,6 +230,11 @@ class VLLMAdapter(BackendAdapter):
                 kwargs[opt_key].update(opt_value)
             else:
                 kwargs[opt_key] = opt_value
+
+        # Force-apply Switchyard ownership labels after user container_options merge.
+        # User labels (if any) are preserved; Switchyard labels always take precedence.
+        user_labels = kwargs.get("labels", {})
+        kwargs["labels"] = {**user_labels, **_switchyard_labels}
 
         # Mount all host stores (models, hf_cache, …)
         # Uses store_mounts from resolved deployment.

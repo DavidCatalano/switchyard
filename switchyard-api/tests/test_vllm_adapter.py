@@ -205,6 +205,14 @@ class TestVLLMAdapter:
         # T4.9: container options
         assert call_kwargs["mem_limit"] == "32g"
 
+        # T5.3: switchyard ownership labels
+        labels = call_kwargs["labels"]
+        assert labels["switchyard.managed"] == "true"
+        assert labels["switchyard.deployment"] == "gpu-test"
+        assert labels["switchyard.model"] == "test-model"
+        assert labels["switchyard.runtime"] == "vllm"
+        assert labels["switchyard.host"] == "test-host"
+
         # Command includes --host 0.0.0.0 and --port 8000
         command = call_kwargs["command"]
         assert "--host" in command
@@ -306,3 +314,99 @@ class TestVLLMAdapter:
         mock_docker_client.assert_called_once_with(
             base_url="tcp://remote-host:2375"
         )
+
+    def test_start_passes_switchyard_labels(self, adapter: VLLMAdapter) -> None:
+        """T5.3: start() passes switchyard ownership labels to Docker."""
+        resolved = ResolvedDeployment(
+            deployment_name="label-test",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=[],
+            docker_host=None,
+            docker_network="",
+            runtime_args={"model": "/models/test"},
+            container_environment={},
+            container_options={},
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "label123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        adapter.start(resolved, 9010)
+
+        call_kwargs = mock_containers.run.call_args.kwargs
+        labels = call_kwargs["labels"]
+        assert labels["switchyard.host"] == "test-host"
+
+    def test_start_switchyard_labels_cannot_be_overridden(
+        self, adapter: VLLMAdapter,
+    ) -> None:
+        """T5.3: container_options labels cannot override switchyard ownership labels.
+
+        User labels from container_options are preserved, but switchyard labels
+        always take precedence.
+        """
+        resolved = ResolvedDeployment(
+            deployment_name="override-test",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=[],
+            docker_host=None,
+            docker_network="",
+            runtime_args={"model": "/models/test"},
+            container_environment={},
+            container_options={
+                "labels": {
+                    "custom.label": "custom-value",
+                    "switchyard.managed": "false",  # should be overwritten
+                    "switchyard.deployment": "other",  # should be overwritten
+                },
+            },
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "override123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        adapter.start(resolved, 9020)
+
+        call_kwargs = mock_containers.run.call_args.kwargs
+        labels = call_kwargs["labels"]
+
+        # User labels are preserved
+        assert labels["custom.label"] == "custom-value"
+        # Switchyard labels always win
+        assert labels["switchyard.managed"] == "true"
+        assert labels["switchyard.deployment"] == "override-test"
+        assert labels["switchyard.model"] == "test-model"
+        assert labels["switchyard.runtime"] == "vllm"
+        assert labels["switchyard.host"] == "test-host"
