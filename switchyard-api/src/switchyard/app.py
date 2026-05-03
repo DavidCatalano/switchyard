@@ -145,9 +145,19 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/api/deployments")
     async def list_deployments() -> list[dict[str, Any]]:
-        """List all configured deployments with current status."""
+        """List all configured deployments with current status.
+
+        Reconciles each deployment with Docker before reporting status:
+        adopts running containers, clears stale in-memory state.
+        """
         results: list[dict[str, Any]] = []
         for dep_name, dep_cfg in config.deployments.items():
+            try:
+                resolved = resolve_deployment(config, dep_name)
+                manager.reconcile(dep_name, resolved)
+            except Exception:
+                pass  # Docker unreachable or config broken
+
             try:
                 info = manager.state.get(dep_name)
                 status = info.status
@@ -164,13 +174,25 @@ def _register_routes(app: FastAPI) -> None:
 
     @app.get("/api/deployments/{deployment}")
     async def get_deployment(deployment: str) -> dict[str, Any]:
-        """Get deployment detail: configured intent + small status summary."""
+        """Get deployment detail: configured intent + small status summary.
+
+        Reconciles with Docker before reporting to adopt running containers
+        or clear stale state.
+        """
         if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
                 detail=f"deployment {deployment!r} not found in config",
             )
         dep_cfg = config.deployments[deployment]
+
+        # Reconcile before reporting
+        try:
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
+        except Exception:
+            pass  # Docker unreachable
+
         try:
             info = manager.state.get(deployment)
             status = info.status
@@ -205,11 +227,10 @@ def _register_routes(app: FastAPI) -> None:
                 detail=f"deployment {deployment!r} not found in config",
             )
 
-        # Reconcile: adopt any running container after API restart
-        # (don't clear existing state — that's load_model's job)
+        # Reconcile: adopt running containers, clear stale state
         try:
             resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved, adopt_only=True)
+            manager.reconcile(deployment, resolved)
         except Exception:
             pass  # Docker unreachable or config broken
 
@@ -301,11 +322,11 @@ def _register_routes(app: FastAPI) -> None:
         The path is forwarded literally to the backend.
         Example: /api/proxy/deployment/v1/embeddings -> /v1/embeddings
         """
-        # Reconcile to adopt running containers after API restart
+        # Reconcile to adopt running containers, clear stale state
         if deployment in config.deployments:
             try:
                 resolved = resolve_deployment(config, deployment)
-                manager.reconcile(deployment, resolved, adopt_only=True)
+                manager.reconcile(deployment, resolved)
             except Exception:
                 pass  # Docker unreachable
 
@@ -324,14 +345,14 @@ def _register_routes(app: FastAPI) -> None:
         Returns active (running) deployments as a list of OpenAI-compatible
         model objects. Only deployments with status "running" are included.
 
-        Adopts any running containers after API restart without clearing
-        existing in-memory state.
+        Reconciles each configured deployment with Docker to adopt running
+        containers and clear stale state.
         """
-        # Adopt any running containers after API restart
+        # Reconcile all configured deployments
         for dep_name in config.deployments:
             try:
                 resolved = resolve_deployment(config, dep_name)
-                manager.reconcile(dep_name, resolved, adopt_only=True)
+                manager.reconcile(dep_name, resolved)
             except Exception:
                 pass  # Docker unreachable or config broken
 
@@ -359,11 +380,11 @@ def _register_routes(app: FastAPI) -> None:
         body = await request.json()
         deployment_name = body.get("model", "")
 
-        # Reconcile to adopt running containers after API restart
+        # Reconcile to adopt running containers, clear stale state
         if deployment_name in config.deployments:
             try:
                 resolved = resolve_deployment(config, deployment_name)
-                manager.reconcile(deployment_name, resolved, adopt_only=True)
+                manager.reconcile(deployment_name, resolved)
             except Exception:
                 pass  # Docker unreachable
 

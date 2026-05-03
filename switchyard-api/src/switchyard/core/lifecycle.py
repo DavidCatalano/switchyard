@@ -32,9 +32,6 @@ from switchyard.core.state import DeploymentStateManager
 if TYPE_CHECKING:
     from switchyard.core.docker import _DockerContainer
 
-if TYPE_CHECKING:
-    from switchyard.core.docker import _DockerContainer
-
 logger = logging.getLogger(__name__)
 
 _DEFAULT_HEALTH_INTERVAL = 2.0  # seconds between health polls
@@ -87,7 +84,6 @@ class LifecycleManager:
 
     def reconcile(
         self, deployment_name: str, resolved: ResolvedDeployment,
-        *, adopt_only: bool = False,
     ) -> DeploymentInfo | None:
         """Reconcile in-memory state with actual Docker container state.
 
@@ -100,19 +96,13 @@ class LifecycleManager:
         2. Container running and missing from memory → adopt it, reserve
            port, return DeploymentInfo.
         3. Container exited/dead → clear in-memory state, release port,
-           cancel health task, return None.
+           cancel health task, remove container, return None.
         4. Container gone → clear in-memory state, release port, cancel
            health task, return None.
-
-        If ``adopt_only=True``, only outcome 1 and 2 apply — existing
-        in-memory state is never cleared. This is suitable for routes
-        that just need to adopt a running container after API restart.
 
         Args:
             deployment_name: Logical deployment identifier.
             resolved: Fully resolved deployment configuration.
-            adopt_only: If True, only adopt running containers; never
-                clear existing in-memory state.
 
         Returns:
             ``DeploymentInfo`` if the deployment is running, ``None``
@@ -130,9 +120,8 @@ class LifecycleManager:
         container = self._find_container(client, deployment_name)
 
         if container is None:
-            # Container gone → clear any stale state (unless adopt_only)
-            if not adopt_only:
-                self._clear_deployment(deployment_name)
+            # Container gone → clear any stale state
+            self._clear_deployment(deployment_name)
             return None
 
         status = self._get_container_status(container)
@@ -141,9 +130,8 @@ class LifecycleManager:
             return self._handle_running(deployment_name, container, resolved)
 
         # exited, dead, or other non-running state → clear + remove
-        if not adopt_only:
-            remove_container(container)
-            self._clear_deployment(deployment_name)
+        remove_container(container)
+        self._clear_deployment(deployment_name)
         return None
 
     def _find_container(
@@ -213,14 +201,16 @@ class LifecycleManager:
 
         Includes the fields needed by _backend_url() and
         chat_completions model rewriting.
+
+        ``served_model_name`` comes from ``resolved.runtime_args`` (which
+        already has deployment/runtime overrides applied), not from
+        ``resolved.model_defaults``.
         """
         metadata: dict[str, Any] = dict(resolved.runtime_args)
         metadata["backend_host"] = resolved.backend_host
         metadata["backend_scheme"] = resolved.backend_scheme
-        if resolved.model_defaults and "served_model_name" in resolved.model_defaults:
-            metadata["served_model_name"] = resolved.model_defaults[
-                "served_model_name"
-            ]
+        # served_model_name from runtime_args is authoritative; overrides
+        # take precedence over raw model_defaults
         return metadata
 
     def _clear_deployment(self, deployment_name: str) -> None:

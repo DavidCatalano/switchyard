@@ -58,10 +58,26 @@ def _mock_active_host():
 
 @pytest.fixture(autouse=True)
 def _mock_docker():
-    """Prevent Docker connections during API tests."""
+    """Prevent Docker connections during API tests.
+
+    Returns containers matching the ``test-deployment`` label so that
+    reconciliation preserves in-memory state instead of clearing it.
+    """
+    mock_container = MagicMock()
+    mock_container.short_id = "mock-9500"
+    mock_container.labels = {
+        "switchyard.managed": "true",
+        "switchyard.deployment": "test-deployment",
+    }
+    mock_container.attrs = {
+        "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "9001"}]}},
+        "State": {"Status": "running"},
+    }
+
     with patch("docker.from_env") as mock:
         mock.return_value = MagicMock()
         mock.return_value.ping.return_value = True
+        mock.return_value.containers.list.return_value = [mock_container]
         yield mock
 
 
