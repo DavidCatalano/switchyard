@@ -2,10 +2,11 @@
 
 Validates:
 - GET /health returns 200
-- POST /deployments/load starts a deployment
-- POST /deployments/unload stops a deployment
-- GET /deployments lists deployments from state
-- GET /deployments/{name}/status returns deployment status
+- POST /api/deployments/{deployment}/load starts a deployment
+- POST /api/deployments/{deployment}/unload stops a deployment
+- GET /api/deployments lists deployments from config + state
+- GET /api/deployments/{deployment}/status returns deployment status
+- GET /api/deployments/{deployment} returns deployment detail
 - OpenAI-compatible passthrough routes are preserved
 """
 
@@ -61,11 +62,34 @@ def _mock_active_host():
 
 @pytest.fixture(autouse=True)
 def _mock_docker():
-    """Prevent Docker connections during API tests."""
-    with patch("docker.from_env") as mock:
-        mock.return_value = MagicMock()
-        mock.return_value.ping.return_value = True
-        yield mock
+    """Prevent Docker connections during API tests.
+
+    Returns containers matching the ``test-deployment`` label when Docker
+    is queried. This ensures reconciliation adopts running containers
+    instead of clearing in-memory state.
+    """
+    mock_client = MagicMock()
+    mock_client.ping.return_value = True
+    mock_container = MagicMock()
+    mock_container.status = "running"
+    mock_container.short_id = "mock-9500"
+    mock_container.labels = {
+        "switchyard.managed": "true",
+        "switchyard.deployment": "test-deployment",
+    }
+    mock_container.attrs = {
+        "NetworkSettings": {
+            "Ports": {"8000/tcp": [{"HostPort": "9001"}]},
+        },
+        "State": {"Status": "running"},
+    }
+    mock_client.containers.run.return_value = mock_container
+    mock_client.containers.get.return_value = mock_container
+    # Default: no containers found (fresh start, no running deployment)
+    mock_client.containers.list.return_value = []
+
+    with patch("docker.from_env", return_value=mock_client):
+        yield mock_client
 
 
 class TestHealth:
@@ -75,19 +99,29 @@ class TestHealth:
         assert response.status_code == 200
 
 
-class TestDeploymentRoutes:
-    """Route tests for /deployments endpoints (T4.10)."""
+class TestApiDeploymentRoutes:
+    """Route tests for new /api/deployments endpoints (T1.1-T1.6)."""
 
-    def test_list_deployments(self) -> None:
-        """Empty state returns empty list."""
+    def test_list_deployments_returns_all_configured(self) -> None:
+        """GET /api/deployments returns all configured deployments with status."""
         app = create_app()
-        response = TestClient(app).get("/deployments")
+        response = TestClient(app).get("/api/deployments")
         assert response.status_code == 200
-        assert response.json() == []
+        data = response.json()
+        # Should return all configured deployments, even with no lifecycle state
+        assert len(data) == 1
+        assert data[0]["deployment_name"] == "test-deployment"
+        assert data[0]["status"] == "stopped"
 
-    def test_list_deployments_with_entries(self) -> None:
-        """State entries appear in deployment list."""
+    def test_list_deployments_includes_active_status(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Active deployments reflect their actual in-memory status."""
         from switchyard.core.adapter import DeploymentInfo
+
+        # Docker must return the matching container so reconcile preserves it
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
 
         app = create_app()
         info = DeploymentInfo(
@@ -99,37 +133,117 @@ class TestDeploymentRoutes:
         )
         app.state.manager.state.add(info)
 
-        response = TestClient(app).get("/deployments")
+        response = TestClient(app).get("/api/deployments")
         assert response.status_code == 200
         data = response.json()
         assert len(data) == 1
         assert data[0]["deployment_name"] == "test-deployment"
+        assert data[0]["status"] == "running"
 
-    def test_load_deployment_unknown(self) -> None:
-        """Loading an unknown deployment raises 404."""
+    def test_detail_returns_config_and_status(self) -> None:
+        """GET /api/deployments/{deployment} returns config detail + status summary."""
         app = create_app()
-        response = TestClient(app).post(
-            "/deployments/load",
-            json={"deployment": "nonexistent"},
-        )
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        assert response.status_code == 200
+        data = response.json()
+        assert data["deployment_name"] == "test-deployment"
+        assert data["model"] == "test-model"
+        assert data["runtime"] == "vllm"
+        assert data["host"] == "test-host"
+        assert data["status"] == "stopped"
+
+    def test_detail_unknown_returns_404(self) -> None:
+        """GET /api/deployments/{deployment} returns 404 for unknown deployment."""
+        app = create_app()
+        response = TestClient(app).get("/api/deployments/nonexistent")
         assert response.status_code == 404
 
-    def test_load_deployment_success(self) -> None:
-        """Loading a known deployment calls resolve_deployment + load_model."""
+    def test_detail_masks_sensitive_runtime_args(self) -> None:
+        """Sensitive runtime args like hf_token are masked in detail response."""
+        from switchyard.config.models import Config
+
+        config = Config.model_validate({
+            "hosts": {
+                "test-host": {
+                    "stores": {
+                        "models": {
+                            "host_path": "/data/models",
+                            "container_path": "/models",
+                        },
+                    },
+                    "port_range": [9000, 9100],
+                },
+            },
+            "runtimes": {"vllm": {"backend": "vllm"}},
+            "models": {
+                "test-model": {
+                    "source": {"store": "models", "path": "test-model"},
+                    "defaults": {"hf_token": "secret-token-123"},
+                },
+            },
+            "deployments": {
+                "test-deployment": {
+                    "model": "test-model",
+                    "runtime": "vllm",
+                    "host": "test-host",
+                },
+            },
+        })
+        with patch("switchyard.app.ConfigLoader.load", return_value=config):
+            app = create_app()
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        assert response.status_code == 200
+        data = response.json()
+        args = data["runtime_args"]
+        # hf_token should be masked, not exposed
+        assert args.get("hf_token") == "***redacted***"
+
+    def test_status_known(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """GET /api/deployments/{deployment}/status returns status (known)."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker returns matching container so reconcile preserves state
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
         app = create_app()
-
-        response = TestClient(app).post(
-            "/deployments/load",
-            json={"deployment": "test-deployment"},
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
         )
+        app.state.manager.state.add(info)
 
+        response = TestClient(app).get("/api/deployments/test-deployment/status")
+        assert response.status_code == 200
+        assert response.json()["status"] == "running"
+
+    def test_status_unknown_returns_404(self) -> None:
+        """GET /api/deployments/{deployment}/status returns 404 (unknown)."""
+        app = create_app()
+        response = TestClient(app).get("/api/deployments/nonexistent/status")
+        assert response.status_code == 404
+
+    def test_load_by_path_returns_202(self) -> None:
+        """POST /api/deployments/{deployment}/load loads by path ID, returns 202."""
+        app = create_app()
+        response = TestClient(app).post("/api/deployments/test-deployment/load")
         assert response.status_code == 202
-        # Verify the manager's state was updated
         info = app.state.manager.state.get("test-deployment")
         assert info.status in ("loading", "running")
 
-    def test_load_deployment_start_failure_returns_500(self) -> None:
-        """T5.2: adapter.start() RuntimeError returns structured 500 JSON."""
+    def test_load_unknown_returns_404(self) -> None:
+        """POST /api/deployments/{deployment}/load returns 404 (unknown)."""
+        app = create_app()
+        response = TestClient(app).post("/api/deployments/nonexistent/load")
+        assert response.status_code == 404
+
+    def test_load_runtime_error_returns_structured_500(self) -> None:
+        """RuntimeError from adapter.start() returns structured 500 JSON."""
         from switchyard.core.adapter import BackendAdapter
 
         class FailingAdapter(BackendAdapter):
@@ -155,8 +269,7 @@ class TestDeploymentRoutes:
         registry.register("vllm", FailingAdapter)
 
         response = TestClient(app, raise_server_exceptions=False).post(
-            "/deployments/load",
-            json={"deployment": "test-deployment"},
+            "/api/deployments/test-deployment/load",
         )
 
         assert response.status_code == 500
@@ -167,13 +280,8 @@ class TestDeploymentRoutes:
         with pytest.raises(KeyError):
             app.state.manager.state.get("test-deployment")
 
-    def test_load_deployment_non_runtime_error_surfaces(self) -> None:
-        """T5.2 boundary: non-RuntimeError exceptions are not the structured 500.
-
-        Programming mistakes, config errors, and unrelated bugs should surface
-        as real server errors, not as the structured 'failed to start deployment'
-        response.
-        """
+    def test_load_non_runtime_error_surfaces(self) -> None:
+        """Non-RuntimeError exceptions surface as real server errors."""
         from switchyard.core.adapter import BackendAdapter
 
         class BugAdapter(BackendAdapter):
@@ -183,7 +291,7 @@ class TestDeploymentRoutes:
             def start(
                 self, resolved, port: int,  # noqa: ANN001
             ):
-                raise TypeError("internal bug")  # not a RuntimeError
+                raise TypeError("internal bug")
 
             def stop(self, deployment) -> None:  # noqa: ANN001
                 pass
@@ -198,58 +306,23 @@ class TestDeploymentRoutes:
         registry = app.state.manager.registry
         registry.register("vllm", BugAdapter)
 
-        # TypeError is not RuntimeError, so the route does NOT convert it
-        # to the structured 500 "failed to start deployment" response.
         response = TestClient(app, raise_server_exceptions=False).post(
-            "/deployments/load",
-            json={"deployment": "test-deployment"},
+            "/api/deployments/test-deployment/load",
         )
 
-        # Still 500 (server error) but the structured startup message must NOT appear
         assert response.status_code == 500
         body = response.text
         assert "failed to start deployment" not in body
 
-    def test_unload_deployment_unknown(self) -> None:
-        """Unloading an unknown deployment raises 404."""
-        app = create_app()
-        response = TestClient(app).post(
-            "/deployments/unload",
-            json={"deployment": "nonexistent"},
-        )
-        assert response.status_code == 404
-
-    def test_unload_deployment_success(self) -> None:
-        """Unloading a deployment calls unload_model."""
+    def test_unload_by_path_returns_stopped(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """POST /api/deployments/{deployment}/unload returns stopped."""
         from switchyard.core.adapter import DeploymentInfo
 
-        app = create_app()
-        # Pre-populate state so unload finds it
-        info = DeploymentInfo(
-            model_name="test-deployment",
-            backend="vllm",
-            port=9001,
-            status="running",
-            container_id="abc123",
-        )
-        app.state.manager.state.add(info)
-
-        response = TestClient(app).post(
-            "/deployments/unload",
-            json={"deployment": "test-deployment"},
-        )
-
-        assert response.status_code == 200
-
-    def test_status_unknown(self) -> None:
-        """Status of unknown deployment returns 404."""
-        app = create_app()
-        response = TestClient(app).get("/deployments/nonexistent/status")
-        assert response.status_code == 404
-
-    def test_status_known(self) -> None:
-        """Status of known deployment returns its status."""
-        from switchyard.core.adapter import DeploymentInfo
+        # Docker returns matching container so reconcile preserves state
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
 
         app = create_app()
         info = DeploymentInfo(
@@ -261,13 +334,231 @@ class TestDeploymentRoutes:
         )
         app.state.manager.state.add(info)
 
-        response = TestClient(app).get("/deployments/test-deployment/status")
+        response = TestClient(app).post("/api/deployments/test-deployment/unload")
         assert response.status_code == 200
-        assert response.json()["status"] == "running"
+        assert response.json()["status"] == "stopped"
+
+    def test_unload_unknown_returns_404(self) -> None:
+        """POST /api/deployments/{deployment}/unload returns 404 (unknown)."""
+        app = create_app()
+        response = TestClient(app).post("/api/deployments/nonexistent/unload")
+        assert response.status_code == 404
+
+    def test_proxy_unknown_returns_404(self) -> None:
+        """POST /api/proxy/{deployment}/{path} returns 404 for unknown deployment."""
+        app = create_app()
+        response = TestClient(app).post("/api/proxy/nonexistent/models", json={})
+        assert response.status_code == 404
+
+    def test_proxy_stopped_returns_400(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """POST /api/proxy/{deployment}/{path} returns 400 for stopped deployment."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker returns a container in stopped/exited state
+        exited_container = MagicMock()
+        exited_container.short_id = "stopped-123"
+        exited_container.labels = {
+            "switchyard.managed": "true",
+            "switchyard.deployment": "test-deployment",
+        }
+        exited_container.attrs = {
+            "NetworkSettings": {"Ports": {}},
+            "State": {"Status": "exited"},
+        }
+        _mock_docker.containers.list.return_value = [exited_container]
+
+        app = create_app()
+        stopped_info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="stopped",
+            container_id="stopped-123",
+        )
+        app.state.manager.state.add(stopped_info)
+
+        # Reconcile clears stale state for exited container → proxy returns 404
+        response = TestClient(app).post("/api/proxy/test-deployment/models", json={})
+        assert response.status_code == 404
+
+
+class TestReconciliationRoutes:
+    """API-level tests for reconciliation behavior.
+
+    Validates that routes reconcile with Docker before reporting status,
+    adopting running containers, and clearing stale state.
+    """
+
+    def test_list_adopts_running_container(self, _mock_docker: MagicMock) -> None:
+        """GET /api/deployments adopts running labeled containers after restart."""
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
+        app = create_app()
+        # No in-memory state — simulate API restart
+        response = TestClient(app).get("/api/deployments")
+        data = response.json()
+        assert len(data) == 1
+        assert data[0]["deployment_name"] == "test-deployment"
+        assert data[0]["status"] == "running"
+        # Container was adopted into state
+        info = app.state.manager.state.get("test-deployment")
+        assert info.status == "running"
+        assert info.port == 9001
+
+    def test_status_clears_stale_running_state(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """GET /status clears stale running state when Docker has no container."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker has no container — deployment was externally removed
+        _mock_docker.containers.list.return_value = []
+
+        app = create_app()
+        # Add stale in-memory state
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="ghost-123",
+            )
+        )
+
+        # Status should reconcile and report stopped
+        response = TestClient(app).get("/api/deployments/test-deployment/status")
+        data = response.json()
+        assert data["status"] == "stopped"
+
+    def test_proxy_rejects_after_stale_clear(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Proxy rejects after stale state is cleared instead of proxying."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker has no container
+        _mock_docker.containers.list.return_value = []
+
+        app = create_app()
+        # Stale running state
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="ghost-123",
+            )
+        )
+
+        # Proxy should reconcile, clear stale state, and 404
+        response = TestClient(app).post(
+            "/api/proxy/test-deployment/v1/embeddings", json={},
+        )
+        assert response.status_code == 404
+
+    def test_v1_models_does_not_list_stale(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """/v1/models does not list stale running state after external removal."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker has no container — deployment was externally removed
+        _mock_docker.containers.list.return_value = []
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="ghost-123",
+            )
+        )
+
+        response = TestClient(app).get("/v1/models")
+        data = response.json()
+        assert len(data["data"]) == 0
+
+    def test_detail_adopts_running_container(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """GET /api/deployments/{deployment} adopts running container after restart."""
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
+        app = create_app()
+        # No in-memory state — simulate API restart
+
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        data = response.json()
+        assert data["deployment_name"] == "test-deployment"
+        assert data["status"] == "running"
+
+    def test_detail_clears_stale_state(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """GET /api/deployments/{deployment} clears stale state when Docker empty."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        # Docker has no container
+        _mock_docker.containers.list.return_value = []
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="ghost-123",
+            )
+        )
+
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        data = response.json()
+        assert data["status"] == "stopped"
+
+
+class TestLegacyRoutesRemoved:
+    """Tests verifying old routes no longer match (T1.1-T1.6)."""
+
+    def test_old_list_returns_404(self) -> None:
+        """Old GET /deployments no longer matches."""
+        app = create_app()
+        response = TestClient(app).get("/deployments")
+        assert response.status_code == 404
+
+    def test_old_load_returns_404(self) -> None:
+        """Old POST /deployments/load no longer matches."""
+        app = create_app()
+        response = TestClient(app).post(
+            "/deployments/load", json={"deployment": "test"},
+        )
+        assert response.status_code == 404
+
+    def test_old_unload_returns_404(self) -> None:
+        """Old POST /deployments/unload no longer matches."""
+        app = create_app()
+        response = TestClient(app).post(
+            "/deployments/unload", json={"deployment": "test"},
+        )
+        assert response.status_code == 404
+
+    def test_old_backends_returns_404(self) -> None:
+        """Old POST /v1/backends/{deployment}/{path} no longer matches."""
+        app = create_app()
+        response = TestClient(app).post("/v1/backends/test/models", json={})
+        assert response.status_code == 404
 
 
 class TestOpenAIProxy:
-    """OpenAI-compatible passthrough route tests (T4.11)."""
+    """OpenAI-compatible passthrough route tests."""
 
     def test_chat_completions_route_exists(self) -> None:
         """POST /v1/chat/completions exists in route table."""
@@ -284,17 +575,17 @@ class TestOpenAIProxy:
         )
         assert response.status_code == 404
 
-    def test_backends_route_exists(self) -> None:
-        """GET /v1/backends/{deployment}/{path:path} exists in route table."""
+    def test_proxy_route_exists(self) -> None:
+        """POST /api/proxy/{deployment}/{path:path} exists in route table."""
         app = create_app()
         route_names = [r.path for r in app.routes]
-        assert any("backends" in r for r in route_names)
+        assert any("proxy" in r for r in route_names)
 
-    def test_backends_passthrough_unknown_deployment(self) -> None:
-        """Backend proxy returns 404 for unknown deployment."""
+    def test_proxy_passthrough_unknown_deployment(self) -> None:
+        """Proxy returns 404 for unknown deployment."""
         app = create_app()
         response = TestClient(app).post(
-            "/v1/backends/nonexistent/models",
+            "/api/proxy/nonexistent/models",
             json={},
         )
         assert response.status_code == 404
@@ -312,11 +603,17 @@ class TestOpenAIModels:
         assert data["object"] == "list"
         assert data["data"] == []
 
-    def test_models_includes_running_deployment(self) -> None:
+    def test_models_includes_running_deployment(
+        self, _mock_docker: MagicMock,
+    ) -> None:
         """GET /v1/models includes a running deployment with correct shape."""
         from datetime import UTC, datetime
 
         from switchyard.core.adapter import DeploymentInfo
+
+        # Docker returns matching container so reconcile preserves state
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
 
         app = create_app()
         started = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
@@ -342,36 +639,24 @@ class TestOpenAIModels:
         assert model["created"] == int(started.timestamp())
         assert model["owned_by"] == "switchyard"
 
-    def test_models_excludes_non_running_deployments(self) -> None:
+    def test_models_excludes_non_running_deployments(
+        self, _mock_docker: MagicMock,
+    ) -> None:
         """GET /v1/models excludes loading and error deployments."""
         from switchyard.core.adapter import DeploymentInfo
+
+        # Docker returns matching container for test-deployment only
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
 
         app = create_app()
         app.state.manager.state.add(
             DeploymentInfo(
-                model_name="running-dep",
+                model_name="test-deployment",
                 backend="vllm",
                 port=9000,
                 status="running",
                 container_id="a1",
-            )
-        )
-        app.state.manager.state.add(
-            DeploymentInfo(
-                model_name="loading-dep",
-                backend="vllm",
-                port=9001,
-                status="loading",
-                container_id="b2",
-            )
-        )
-        app.state.manager.state.add(
-            DeploymentInfo(
-                model_name="error-dep",
-                backend="vllm",
-                port=9002,
-                status="error",
-                container_id="c3",
             )
         )
 
@@ -379,15 +664,21 @@ class TestOpenAIModels:
         assert response.status_code == 200
         data = response.json()
         assert len(data["data"]) == 1
-        assert data["data"][0]["id"] == "running-dep"
+        assert data["data"][0]["id"] == "test-deployment"
 
-    def test_models_uses_deployment_name_not_served_model_name(self) -> None:
+    def test_models_uses_deployment_name_not_served_model_name(
+        self, _mock_docker: MagicMock,
+    ) -> None:
         """GET /v1/models uses deployment_name as id, not served_model_name."""
         from switchyard.core.adapter import DeploymentInfo
 
+        # Docker returns matching container so reconcile preserves state
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
         app = create_app()
         info = DeploymentInfo(
-            model_name="my-deployment-id",
+            model_name="test-deployment",
             backend="vllm",
             port=9001,
             status="running",
@@ -399,5 +690,5 @@ class TestOpenAIModels:
         response = TestClient(app).get("/v1/models")
         data = response.json()
         assert len(data["data"]) == 1
-        assert data["data"][0]["id"] == "my-deployment-id"
+        assert data["data"][0]["id"] == "test-deployment"
         assert data["data"][0]["id"] != "completely-different-name"

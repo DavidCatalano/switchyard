@@ -16,7 +16,6 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
 
 from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader, resolve_deployment
@@ -108,6 +107,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     app.state.config = config
 
     # Create lifecycle manager with port range from active host
+    from switchyard.core.docker import create_default_factory
     from switchyard.core.registry import AdapterRegistry
 
     registry = AdapterRegistry()
@@ -121,24 +121,13 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
         backend_host=backend_host,
         backend_scheme=backend_scheme,
         docker_network=docker_network,
+        docker_client_factory=create_default_factory(),
     )
 
     # Register endpoints
     _register_routes(app)
 
     return app
-
-
-class LoadModelRequest(BaseModel):
-    """Request body for loading a deployment."""
-
-    deployment: str
-
-
-class UnloadModelRequest(BaseModel):
-    """Request body for unloading a deployment."""
-
-    deployment: str
 
 
 def _register_routes(app: FastAPI) -> None:
@@ -152,31 +141,139 @@ def _register_routes(app: FastAPI) -> None:
         """Health check endpoint."""
         return {"status": "ok"}
 
-    @app.post("/deployments/load", status_code=202)
-    async def load_deployment(body: LoadModelRequest) -> dict[str, Any]:
+    # ── /api/ deployment lifecycle routes ──────────────────────────
+
+    @app.get("/api/deployments")
+    async def list_deployments() -> list[dict[str, Any]]:
+        """List all configured deployments with current status.
+
+        Reconciles each deployment with Docker before reporting status:
+        adopts running containers, clears stale in-memory state.
+        """
+        results: list[dict[str, Any]] = []
+        for dep_name, dep_cfg in config.deployments.items():
+            try:
+                resolved = resolve_deployment(config, dep_name)
+                manager.reconcile(dep_name, resolved)
+            except Exception:
+                pass  # Docker unreachable or config broken
+
+            try:
+                info = manager.state.get(dep_name)
+                status = info.status
+            except KeyError:
+                status = "stopped"
+            results.append({
+                "deployment_name": dep_name,
+                "model": dep_cfg.model,
+                "runtime": dep_cfg.runtime,
+                "host": dep_cfg.host,
+                "status": status,
+            })
+        return results
+
+    @app.get("/api/deployments/{deployment}")
+    async def get_deployment(deployment: str) -> dict[str, Any]:
+        """Get deployment detail: configured intent + small status summary.
+
+        Reconciles with Docker before reporting to adopt running containers
+        or clear stale state.
+        """
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+        dep_cfg = config.deployments[deployment]
+
+        # Reconcile before reporting
+        try:
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
+        except Exception:
+            pass  # Docker unreachable
+
+        try:
+            info = manager.state.get(deployment)
+            status = info.status
+        except KeyError:
+            status = "stopped"
+
+        # Resolve store paths for the detail response
+        resolved = resolve_deployment(config, deployment)
+
+        return {
+            "deployment_name": deployment,
+            "model": dep_cfg.model,
+            "runtime": dep_cfg.runtime,
+            "host": dep_cfg.host,
+            "placement": {
+                "accelerator_ids": dep_cfg.placement.accelerator_ids
+                if dep_cfg.placement
+                else [],
+            },
+            "model_host_path": resolved.model_host_path,
+            "model_container_path": resolved.model_container_path,
+            "runtime_args": _mask_sensitive_args(resolved.runtime_args),
+            "status": status,
+        }
+
+    @app.get("/api/deployments/{deployment}/status")
+    async def get_deployment_status(deployment: str) -> dict[str, Any]:
+        """Get live operational status for a deployment."""
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+
+        # Reconcile: adopt running containers, clear stale state
+        try:
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
+        except Exception:
+            pass  # Docker unreachable or config broken
+
+        try:
+            info = manager.state.get(deployment)
+            return {
+                "deployment_name": info.model_name,
+                "status": info.status,
+                "port": info.port,
+                "container_id": info.container_id,
+                "started_at": info.started_at.isoformat(),
+                "health": "unknown",
+            }
+        except KeyError:
+            return {
+                "deployment_name": deployment,
+                "status": "stopped",
+                "health": "unknown",
+            }
+
+    @app.post("/api/deployments/{deployment}/load", status_code=202)
+    async def load_deployment(deployment: str) -> dict[str, Any]:
         """Load a deployment (async).
 
         Resolves the deployment config and starts the container via the
         backend adapter. Returns immediately; poll status for progress.
         """
-        deployment_name = body.deployment
-        if deployment_name not in config.deployments:
+        if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
-                detail=f"deployment {deployment_name!r} not found in config",
+                detail=f"deployment {deployment!r} not found in config",
             )
 
-        # Resolve the deployment and start it via the lifecycle manager.
-        resolved = resolve_deployment(config, deployment_name)
+        resolved = resolve_deployment(config, deployment)
 
         try:
-            info = await manager.load_model(deployment_name, resolved)
+            info = await manager.load_model(deployment, resolved)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except RuntimeError as exc:
             raise HTTPException(
                 status_code=500,
-                detail=f"failed to start deployment {deployment_name!r}: {exc}",
+                detail=f"failed to start deployment {deployment!r}: {exc}",
             )
 
         return {
@@ -187,46 +284,59 @@ def _register_routes(app: FastAPI) -> None:
             "container_id": info.container_id,
         }
 
-    @app.post("/deployments/unload")
-    async def unload_deployment(body: UnloadModelRequest) -> dict[str, str]:
-        """Unload a deployment."""
-        deployment_name = body.deployment
-        try:
-            await manager.unload_model(deployment_name)
-        except KeyError:
+    @app.post("/api/deployments/{deployment}/unload")
+    async def unload_deployment(deployment: str) -> dict[str, str]:
+        """Unload a deployment.
+
+        Reconciles with Docker first so that stopped running containers
+        after API restart are properly stopped rather than silently ignored.
+        """
+        if deployment not in config.deployments:
             raise HTTPException(
                 status_code=404,
-                detail=f"deployment {deployment_name!r} not found",
+                detail=f"deployment {deployment!r} not found in config",
             )
 
-        return {"deployment_name": deployment_name, "status": "stopped"}
-
-    @app.get("/deployments")
-    async def list_deployments() -> list[dict[str, Any]]:
-        """List all deployments with status."""
-        names = manager.state.list_deployments()
-        return [
-            {
-                "deployment_name": info.model_name,
-                "backend": info.backend,
-                "port": info.port,
-                "status": info.status,
-                "started_at": info.started_at,
-            }
-            for info in (manager.state.get(n) for n in names)
-        ]
-
-    @app.get("/deployments/{deployment}/status")
-    async def get_deployment_status(deployment: str) -> dict[str, str]:
-        """Get status of a single deployment."""
+        # Reconcile first: if a running container exists after API restart,
+        # adopt it into state so it can be stopped
         try:
-            info = manager.state.get(deployment)
-        except KeyError:
-            raise HTTPException(
-                status_code=404, detail=f"deployment {deployment!r} not found",
-            )
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
+        except Exception:
+            pass  # Docker unreachable
 
-        return {"deployment_name": info.model_name, "status": info.status}
+        try:
+            await manager.unload_model(deployment)
+        except KeyError:
+            # Deployment not in state (already stopped/unloaded)
+            return {"deployment_name": deployment, "status": "stopped"}
+
+        return {"deployment_name": deployment, "status": "stopped"}
+
+    @app.post("/api/proxy/{deployment}/{path:path}")
+    async def proxy_passthrough(
+        request: Request, deployment: str, path: str,
+    ) -> Any:
+        """Scoped passthrough to backend-specific endpoints.
+
+        The path is forwarded literally to the backend.
+        Example: /api/proxy/deployment/v1/embeddings -> /v1/embeddings
+        """
+        # Reconcile to adopt running containers, clear stale state
+        if deployment in config.deployments:
+            try:
+                resolved = resolve_deployment(config, deployment)
+                manager.reconcile(deployment, resolved)
+            except Exception:
+                pass  # Docker unreachable
+
+        dep = _get_running_deployment(deployment, manager)
+        backend_url = _backend_url(dep, config)
+        body = await request.json()
+
+        return _blocking_proxy(backend_url + f"/{path}", body)
+
+    # ── /v1/ OpenAI-compatible inference routes ────────────────────
 
     @app.get("/v1/models")
     async def list_models() -> dict[str, Any]:
@@ -234,7 +344,18 @@ def _register_routes(app: FastAPI) -> None:
 
         Returns active (running) deployments as a list of OpenAI-compatible
         model objects. Only deployments with status "running" are included.
+
+        Reconciles each configured deployment with Docker to adopt running
+        containers and clear stale state.
         """
+        # Reconcile all configured deployments
+        for dep_name in config.deployments:
+            try:
+                resolved = resolve_deployment(config, dep_name)
+                manager.reconcile(dep_name, resolved)
+            except Exception:
+                pass  # Docker unreachable or config broken
+
         deployments = manager.state.list_deployments()
         models = [
             {
@@ -258,6 +379,15 @@ def _register_routes(app: FastAPI) -> None:
         """
         body = await request.json()
         deployment_name = body.get("model", "")
+
+        # Reconcile to adopt running containers, clear stale state
+        if deployment_name in config.deployments:
+            try:
+                resolved = resolve_deployment(config, deployment_name)
+                manager.reconcile(deployment_name, resolved)
+            except Exception:
+                pass  # Docker unreachable
+
         deployment = _get_running_deployment(deployment_name, manager)
         backend_url = _backend_url(deployment, config)
         backend_body = dict(body)
@@ -275,20 +405,25 @@ def _register_routes(app: FastAPI) -> None:
             backend_url + "/v1/chat/completions", backend_body
         )
 
-    @app.post("/v1/backends/{deployment}/{path:path}")
-    async def backend_passthrough(
-        request: Request, deployment: str, path: str,
-    ) -> Any:
-        """Scoped passthrough to backend-specific endpoints.
 
-        Routes to backend container for deployment-specific API calls
-        (embeddings, tool calls, etc.).
-        """
-        dep = _get_running_deployment(deployment, manager)
-        backend_url = _backend_url(dep, config)
-        body = await request.json()
+def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Mask sensitive runtime args recursively.
 
-        return _blocking_proxy(backend_url + f"/v1/{path}", body)
+    Normalizes keys by replacing '-' with '_' and redacts any key containing
+    'token', 'secret', 'password', or 'api_key'. Handles nested dicts including
+    extra_args.
+    """
+    sensitive_substrings = {"token", "secret", "password", "api_key"}
+    masked: dict[str, Any] = {}
+    for key, value in args.items():
+        normalized = key.replace("-", "_")
+        if any(substr in normalized for substr in sensitive_substrings):
+            masked[key] = "***redacted***"
+        elif isinstance(value, dict):
+            masked[key] = _mask_sensitive_args(value)
+        else:
+            masked[key] = value
+    return masked
 
 
 def _get_running_deployment(

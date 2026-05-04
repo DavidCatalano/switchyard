@@ -58,10 +58,26 @@ def _mock_active_host():
 
 @pytest.fixture(autouse=True)
 def _mock_docker():
-    """Prevent Docker connections during API tests."""
+    """Prevent Docker connections during API tests.
+
+    Returns containers matching the ``test-deployment`` label so that
+    reconciliation preserves in-memory state instead of clearing it.
+    """
+    mock_container = MagicMock()
+    mock_container.short_id = "mock-9500"
+    mock_container.labels = {
+        "switchyard.managed": "true",
+        "switchyard.deployment": "test-deployment",
+    }
+    mock_container.attrs = {
+        "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "9001"}]}},
+        "State": {"Status": "running"},
+    }
+
     with patch("docker.from_env") as mock:
         mock.return_value = MagicMock()
         mock.return_value.ping.return_value = True
+        mock.return_value.containers.list.return_value = [mock_container]
         yield mock
 
 
@@ -79,12 +95,12 @@ class TestProxyErrors:
         )
         assert resp.status_code == 404
 
-    def test_backends_passthrough_unknown_deployment(self) -> None:
+    def test_proxy_passthrough_unknown_deployment(self) -> None:
         """Returns 404 for deployment name not in state."""
         app = create_app()
         # Real manager's state is empty -> 404
         client = TestClient(app)
-        resp = client.post("/v1/backends/nonexistent/models", json={})
+        resp = client.post("/api/proxy/nonexistent/v1/models", json={})
         assert resp.status_code == 404
 
     def test_chat_completions_upstream_timeout(self) -> None:
@@ -118,8 +134,8 @@ class TestProxyErrors:
             )
         assert resp.status_code == 504
 
-    def test_backends_passthrough_upstream_error(self) -> None:
-        """Returns backend error code for backend passthrough."""
+    def test_proxy_passthrough_upstream_error(self) -> None:
+        """Returns backend error code for proxy passthrough."""
         from switchyard.core.adapter import DeploymentInfo
 
         mock_response = MagicMock()
@@ -147,7 +163,7 @@ class TestProxyErrors:
         with patch("switchyard.app.httpx.Client", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
-                "/v1/backends/test-deployment/models",
+                "/api/proxy/test-deployment/v1/models",
                 json={},
             )
         assert resp.status_code == 429

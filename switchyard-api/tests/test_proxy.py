@@ -2,7 +2,7 @@
 
 Validates:
 - /v1/chat/completions forwards to active deployment
-- /v1/backends/{deployment}/{path:path} forwards to active deployment
+- /api/proxy/{deployment}/{path:path} forwards to active deployment (literal path)
 - Proxy returns errors when deployment not found or not running
 """
 
@@ -58,10 +58,26 @@ def _mock_active_host():
 
 @pytest.fixture(autouse=True)
 def _mock_docker():
-    """Prevent Docker connections during API tests."""
+    """Prevent Docker connections during API tests.
+
+    Returns containers matching the ``test-deployment`` label so that
+    reconciliation preserves in-memory state instead of clearing it.
+    """
+    mock_container = MagicMock()
+    mock_container.short_id = "mock-9500"
+    mock_container.labels = {
+        "switchyard.managed": "true",
+        "switchyard.deployment": "test-deployment",
+    }
+    mock_container.attrs = {
+        "NetworkSettings": {"Ports": {"8000/tcp": [{"HostPort": "9001"}]}},
+        "State": {"Status": "running"},
+    }
+
     with patch("docker.from_env") as mock:
         mock.return_value = MagicMock()
         mock.return_value.ping.return_value = True
+        mock.return_value.containers.list.return_value = [mock_container]
         yield mock
 
 
@@ -313,15 +329,15 @@ class TestChatCompletionsProxy:
         assert resp.status_code == 503
 
 
-class TestBackendsPassthrough:
-    """Tests for /v1/backends/{deployment}/{path:path} proxy."""
+class TestProxyPassthrough:
+    """Tests for /api/proxy/{deployment}/{path:path} proxy."""
 
     def test_unknown_deployment_returns_404(self) -> None:
         """Returns 404 for deployment not in state."""
         app = create_app()
 
         client = TestClient(app)
-        resp = client.post("/v1/backends/nonexistent/models", json={})
+        resp = client.post("/api/proxy/nonexistent/v1/models", json={})
         assert resp.status_code == 404
 
     def test_deployment_not_running_returns_400(self) -> None:
@@ -339,11 +355,11 @@ class TestBackendsPassthrough:
         app.state.manager.state.add(stopped_info)
 
         client = TestClient(app)
-        resp = client.post("/v1/backends/stopped-deployment/models", json={})
+        resp = client.post("/api/proxy/stopped-deployment/v1/models", json={})
         assert resp.status_code == 400
 
-    def test_backend_passthrough_success(self) -> None:
-        """Backend passthrough forwards to backend and returns response."""
+    def test_proxy_passthrough_success(self) -> None:
+        """Proxy forwards to backend and returns response."""
         from switchyard.core.adapter import DeploymentInfo
 
         mock_response = MagicMock()
@@ -371,11 +387,11 @@ class TestBackendsPassthrough:
         with patch("switchyard.app.httpx.Client", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
-                "/v1/backends/test-deployment/embeddings",
+                "/api/proxy/test-deployment/v1/embeddings",
                 json={"input": "hello"},
             )
 
-        # Assert forwarded URL and body
+        # Assert forwarded URL and body (path is literal)
         mock_client.post.assert_called_once()
         call_args = mock_client.post.call_args
         assert call_args.args[0] == "http://127.0.0.1:9001/v1/embeddings"

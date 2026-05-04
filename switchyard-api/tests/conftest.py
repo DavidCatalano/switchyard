@@ -40,5 +40,7 @@ def _isolate_app_settings(request: pytest.FixtureRequest) -> None:
         "switchyard.config.models.AppSettings", return_value=mock,
     ), patch(
         "switchyard.config.loader.AppSettings", return_value=mock,
+    ), patch(
+        "switchyard.core.docker.AppSettings", return_value=mock,
     ):
         yield
