@@ -2,7 +2,7 @@
 
 **Title**: SEP-003 Deployment Lifecycle and API Namespace Migration
 **ID**: SEP-003-02-PLAN-deployment-lifecycle
-**Status**: Draft
+**Status**: Complete
 **Date**: 2026-05-03
 
 ---
@@ -294,24 +294,24 @@ uv run mypy src/switchyard
 ```
 
 ### Success Criteria Validation
-- [ ] All tests pass: `uv run pytest` exits 0
-- [ ] Linting clean: `uv run ruff check src tests` exits 0
-- [ ] Type checking clean: `uv run mypy src/switchyard` exits 0
-- [ ] No regressions: `GET /v1/models`, `POST /v1/chat/completions`, `GET /health` unchanged
-- [ ] `GET /api/deployments` returns all configured deployments with derived status
-- [ ] `GET /api/deployments/{deployment}` returns config detail + status summary (no dry-run data)
-- [ ] `GET /api/deployments/{deployment}/status` returns live operational state
-- [ ] `POST /api/deployments/{deployment}/load` loads by path ID, returns 202
-- [ ] `POST /api/deployments/{deployment}/unload` unloads by path ID, idempotent on gone containers
-- [ ] `POST /api/proxy/{deployment}/{path:path}` proxies through running deployment
-- [ ] Old routes return 404 (`POST /deployments/load`, `GET /deployments`, `POST /v1/backends/...`)
-- [ ] Reconciliation adopts running Switchyard-labeled containers when API memory is empty and reserves the observed port
-- [ ] Reconciliation clears in-memory state and releases ports for gone/exited/dead containers
-- [ ] Reconciliation cancels/removes stale health tasks for cleared deployments
-- [ ] Reconciliation before load prevents stale state from blocking valid loads
-- [ ] Stale exited/dead managed containers do not cause Docker name conflicts on load
-- [ ] Makefile/manual smoke references use new `/api/deployments/...` lifecycle routes
-- [ ] Ruff and mypy pass with no errors
+- [x] All tests pass: `uv run pytest` exits 0
+- [x] Linting clean: `uv run ruff check src tests` exits 0
+- [x] Type checking clean: `uv run mypy src/switchyard` exits 0
+- [x] No regressions: `GET /v1/models`, `POST /v1/chat/completions`, `GET /health` unchanged
+- [x] `GET /api/deployments` returns all configured deployments with derived status
+- [x] `GET /api/deployments/{deployment}` returns config detail + status summary (no dry-run data)
+- [x] `GET /api/deployments/{deployment}/status` returns live operational state
+- [x] `POST /api/deployments/{deployment}/load` loads by path ID, returns 202
+- [x] `POST /api/deployments/{deployment}/unload` unloads by path ID, idempotent on gone containers
+- [x] `POST /api/proxy/{deployment}/{path:path}` proxies through running deployment
+- [x] Old routes return 404 (`POST /deployments/load`, `GET /deployments`, `POST /v1/backends/...`)
+- [x] Reconciliation adopts running Switchyard-labeled containers when API memory is empty and reserves the observed port
+- [x] Reconciliation clears in-memory state and releases ports for gone/exited/dead containers
+- [x] Reconciliation cancels/removes stale health tasks for cleared deployments
+- [x] Reconciliation before load prevents stale state from blocking valid loads
+- [x] Stale exited/dead managed containers do not cause Docker name conflicts on load
+- [x] Makefile/manual smoke references use new `/api/deployments/...` lifecycle routes
+- [x] Ruff and mypy pass with no errors
 
 ---
 

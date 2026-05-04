@@ -68,7 +68,7 @@ models:
       served_model_name: tinyllama-1.1b-chat
 
 deployments:
-  qwen3-27b-fp8-vllm-trainbox:
+  qwen3.6-27b-fp8-vllm-trainbox:
     model: qwen3-27b-fp8
     runtime: vllm
     host: trainbox

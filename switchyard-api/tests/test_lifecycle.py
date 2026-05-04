@@ -512,6 +512,34 @@ class TestReconcile:
         assert "test-deployment" not in manager.state.list_deployments()
         assert 9500 not in manager.port_allocator.allocated
 
+    async def test_reconcile_gone_container_cancels_health_task(self) -> None:
+        """Container gone → cancel and remove stale health task."""
+        factory = _make_factory(None)
+        manager = self._make_manager(factory)
+
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        manager.port_allocator.allocate(port=9500)
+
+        task = asyncio.create_task(asyncio.sleep(60))
+        manager._health_tasks["test-deployment"] = task
+
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        await asyncio.sleep(0)
+
+        assert result is None
+        assert "test-deployment" not in manager._health_tasks
+        assert task.cancelled()
+        assert "test-deployment" not in manager.state.list_deployments()
+        assert 9500 not in manager.port_allocator.allocated
+
     def test_reconcile_unknown_deployment_noop(self) -> None:
         """Unknown deployment → no-op, no error."""
         container = _make_mock_container(status="running")
@@ -567,6 +595,9 @@ class TestReconcile:
         assert result is not None
         # served_model_name should not be injected from model_defaults
         assert "served_model_name" not in result.metadata
+
+
+class TestReconcileIntegration:
     """Lifecycle integration tests for reconciliation (T2.5)."""
 
     async def test_reconcile_adopts_running_container_on_load(
