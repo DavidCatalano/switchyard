@@ -89,7 +89,7 @@ preserves existing state, returns structured observations, ensures health
 tasks, and handles async task creation safely.
 
 #### Tasks
-- [ ] **T1.1**: Write failing tests for health-aware reconciliation
+- [x] **T1.1**: Write failing tests for health-aware reconciliation
   - `test_reconcile_running_container_adopts_as_loading`: Verify adoption
     creates `status="loading"` instead of `running`
   - `test_reconcile_running_container_preserves_loading`: Verify existing
@@ -109,7 +109,7 @@ tasks, and handles async task creation safely.
     `_ensure_health_task()` does not crash when no event loop is running
     (sync test context) — logs a warning and skips
 
-- [ ] **T1.2**: Refactor `_handle_running()` in `lifecycle.py`
+- [x] **T1.2**: Refactor `_handle_running()` in `lifecycle.py`
   - Change adoption status from `"running"` to `"loading"`
   - Remove the coercion block that updates `loading`/`error` to `running`
   - Call `_ensure_health_task()` for:
@@ -118,7 +118,7 @@ tasks, and handles async task creation safely.
   - Do NOT start a task for existing `running` or existing `error`
     (error is terminal)
 
-- [ ] **T1.3**: Add `_ensure_health_task()` helper
+- [x] **T1.3**: Add `_ensure_health_task()` helper
   - New method on `LifecycleManager`:
     ```python
     def _ensure_health_task(self, deployment_name: str, info: DeploymentInfo) -> None:
@@ -135,7 +135,7 @@ tasks, and handles async task creation safely.
     returns without creating a task
   - If task already exists: no-op
 
-- [ ] **T1.4**: Add `ReconcileResult` dataclass
+- [x] **T1.4**: Add `ReconcileResult` dataclass
   - New dataclass in `switchyard-api/src/switchyard/core/lifecycle.py`:
     ```python
     @dataclass
@@ -171,7 +171,7 @@ tasks, and handles async task creation safely.
   - Read/status routes use `container_status` and `docker_error` for
     graceful degraded responses
 
-- [ ] **T1.5**: Update `load_model()` to handle reconciliation results
+- [x] **T1.5**: Update `load_model()` to handle reconciliation results
   - Inspects `ReconcileResult` from `reconcile()`:
     - `result.docker_error is not None` → raise `RuntimeError` (fail
       fast; Docker unreachable means we can't safely start)
@@ -188,7 +188,7 @@ tasks, and handles async task creation safely.
     explicit recovery operation.
   - Write tests for each branch.
 
-- [ ] **T1.6**: Update existing reconciliation tests to reflect new
+- [x] **T1.6**: Update existing reconciliation tests to reflect new
   semantics
   - All tests that call `reconcile()` must switch from direct
     `result.status` / `result.port` access to `result.info.status` /

@@ -298,7 +298,8 @@ class TestApiDeploymentRoutes:
         assert "detail" in data
         assert "failed to start deployment" in data["detail"]
         assert "failed to reconcile Docker state before load" in data["detail"]
-        assert "cannot reach docker daemon" in data["detail"]
+        # Error message is sanitized, not raw Docker SDK output
+        assert "docker unavailable" in data["detail"].lower()
         with pytest.raises(KeyError):
             app.state.manager.state.get("test-deployment")
 
@@ -414,7 +415,7 @@ class TestReconciliationRoutes:
     """
 
     def test_list_adopts_running_container(self, _mock_docker: MagicMock) -> None:
-        """GET /api/deployments adopts running labeled containers after restart."""
+        """GET /api/deployments adopts running labeled containers as loading."""
         mock_container = _mock_docker.containers.get.return_value
         _mock_docker.containers.list.return_value = [mock_container]
 
@@ -424,10 +425,10 @@ class TestReconciliationRoutes:
         data = response.json()
         assert len(data) == 1
         assert data[0]["deployment_name"] == "test-deployment"
-        assert data[0]["status"] == "running"
-        # Container was adopted into state
+        assert data[0]["status"] == "loading"
+        # Container was adopted into state as loading
         info = app.state.manager.state.get("test-deployment")
-        assert info.status == "running"
+        assert info.status == "loading"
         assert info.port == 9001
 
     def test_status_clears_stale_running_state(
@@ -510,7 +511,7 @@ class TestReconciliationRoutes:
     def test_detail_adopts_running_container(
         self, _mock_docker: MagicMock,
     ) -> None:
-        """GET /api/deployments/{deployment} adopts running container after restart."""
+        """GET /api/deployments/{deployment} adopts running container as loading."""
         mock_container = _mock_docker.containers.get.return_value
         _mock_docker.containers.list.return_value = [mock_container]
 
@@ -520,7 +521,7 @@ class TestReconciliationRoutes:
         response = TestClient(app).get("/api/deployments/test-deployment")
         data = response.json()
         assert data["deployment_name"] == "test-deployment"
-        assert data["status"] == "running"
+        assert data["status"] == "loading"
 
     def test_detail_clears_stale_state(
         self, _mock_docker: MagicMock,
