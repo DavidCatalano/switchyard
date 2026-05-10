@@ -21,9 +21,26 @@
   `error` semantics, first-class `health_timeout_seconds`, and
   bootstrap/orphan scope verification.
 
+- 2026-05-10 — Phase 1 coding complete. Three review findings addressed:
+  1. `load_model()` metadata now starts from `deployment.metadata`
+     (adapter-provided) and overlays `runtime_args`, preserving fields
+     like vLLM `served_model_name`.
+  2. `_ensure_health_task()` checks `task.done()` instead of
+     `task.cancelled()` so completed/failed tasks are replaced.
+  3. `reconcile()` try/except expanded to wrap `remove_container()`
+     and status lookup, not just factory/lookup — any Docker API failure
+     now returns `docker_error`.
+
+- 2026-05-10 — Phase 2 review: `bootstrap()` confirmed not wired into
+  production startup. T2 scope is minimal (semantics + tests only).
+  Resolver callable passed into `bootstrap()` rather than direct import.
+  Orphan skip-on-error decided. PLAN updated with findings.
+
 ---
 
 ## Cold Start / Handoff
+
+Phase 1 is complete (T1.1–T1.6 checked). Phase 2–6 remain.
 
 Start by reading these SEP artifacts in order:
 
@@ -49,10 +66,9 @@ Then inspect these test files:
 - `switchyard-api/tests/test_proxy.py`
 - `switchyard-api/tests/test_errors.py`
 
-Implementation must follow the PLAN order. Do not begin with API response
-fields; those depend on `ReconcileResult`. The first coding slice should be
-the reconciliation result shape, then `_ensure_health_task()`, then
-`_handle_running()` semantics.
+Implementation must follow the PLAN order. Phase 1 (`ReconcileResult`,
+`_ensure_health_task()`, `_handle_running()` semantics, `load_model()`
+updates) is complete. Phase 2 (bootstrap normalization) is next.
 
 Key decisions to preserve:
 

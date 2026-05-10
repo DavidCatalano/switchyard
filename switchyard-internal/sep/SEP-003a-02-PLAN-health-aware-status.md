@@ -219,8 +219,10 @@ stays unchanged.
 
 #### Tasks
 - [ ] **T2.0**: Verify bootstrap/orphan production path before changing it
-  - Confirm whether `LifecycleManager.bootstrap()` is invoked by
-    production startup today.
+  - **Result (2026-05-10)**: `LifecycleManager.bootstrap()` is not wired
+    into production startup from `create_app()`. T2 scope is minimal:
+    align `bootstrap()` semantics and tests. No production startup wiring
+    or orphan redesign in this SEP.
   - Confirm that `OrphanDetector` still matches current SEP-003
     containers. Current vLLM containers are named `switchyard-{deployment}`
     and identified by labels, while `OrphanDetector` historically matches
@@ -237,22 +239,38 @@ stays unchanged.
 - [ ] **T2.2**: Update `bootstrap()` in `lifecycle.py`
   - Keep `OrphanDetector` unchanged — it remains low-level Docker
     discovery returning `DeploymentInfo(status="running")`
+  - Accept a resolver callable as an optional argument (e.g.
+    `resolve: Callable[[str], ResolvedDeployment] | None`). Do NOT add a
+    hard `lifecycle -> config.loader` import. Resolution stays at the
+    app/config boundary.
   - In the orphan adoption loop:
-    1. Resolve the deployment config for the orphan's model name
-    2. Create a new `DeploymentInfo(status="loading")` (overwrite status
+    1. Look up the deployment in `config.deployments` using
+       `orphan.model_name` as the **deployment key** (not logical model
+       name) — this is a naming artifact of `OrphanDetector`.
+    2. If resolution/config lookup fails for an orphan, skip it with a
+       warning. Do not propagate the error; orphan adoption is best-effort.
+    3. Resolve via the resolver callable (if provided) to get
+       `ResolvedDeployment`.
+    4. Create a new `DeploymentInfo(status="loading")` (overwrite status
        from orphan's `"running"`)
-    3. Populate metadata using the same logic as reconciliation
+    5. Populate metadata using the same logic as reconciliation
        adoption — reuse `_build_adopted_metadata(resolved)` or equivalent
        to set `backend_host`, `backend_scheme`, and
        `served_model_name` from resolved runtime args
-    4. Call `self.state.add(orphan_loading)`
-    5. Call `self._ensure_health_task(model_name, orphan_loading)`
+    6. Call `self.state.add(orphan_loading)`
+    7. Call `self._ensure_health_task(deployment_name, orphan_loading)`
+       — trust `_ensure_health_task()`'s event-loop guard; no extra
+       bootstrap-specific guard needed
+  - Note: `DeploymentInfo.model_name` in orphan results carries the
+    **deployment name**, not the logical model name. Use this wording in
+    comments/tests to avoid reinforcing the naming confusion.
 
 - [ ] **T2.3**: Update existing bootstrap tests
   - `test_bootstrap_adopt_orphans`: change expected status from
     `"running"` to `"loading"`
   - `test_bootstrap_adopted_skip_auto_start`: same change
   - Add assertion for health task presence
+  - Verify orphan skip-on-error behavior (deployment not in config)
 
 - [ ] **T2.4**: Verify `test_orphan.py` still passes
   - `OrphanDetector.scan()` still creates `status="running"` objects —
@@ -492,6 +510,12 @@ Docker-unreachable behavior per route.
 | "Running means healthy" applies to startup only | Health polling stops once status becomes `running`. Continuous post-running monitoring is out of scope. | Pending |
 | Docker-unreachable unload preserves state and returns 500 | Clearing state after a failed Docker stop would recreate the stale-state problem this SEP is trying to avoid. | Pending |
 | No changes to `/v1/models` | Already correctly gates on `status == "running"`; fix makes the gate more truthful. | Pending |
+| Bootstrap scope is minimal: align semantics and tests only | `bootstrap()` is not wired into `create_app()` production startup. No production startup wiring or orphan redesign in SEP-003a. | Pending |
+| Pass resolver callable into `bootstrap()` rather than direct import | Avoid hard `lifecycle -> config.loader` import. Keep resolution at the app/config boundary. | Pending |
+| Orphan `DeploymentInfo.model_name` carries deployment key | Naming artifact of `OrphanDetector`. Adoption loop treats `orphan.model_name` as deployment name for config lookup. | Pending |
+| Skip orphans whose config lookup fails | Orphan adoption is best-effort recovery. A stale or renamed deployment should not prevent app startup or block other valid orphan adoptions. | Pending |
+| Use `task.done()` instead of `task.cancelled()` in `_ensure_health_task()` | A completed health poll (success or exception) must be replaceable. `done()` covers both cancelled and normally-finished tasks. | Pending |
+| Expand `reconcile()` try/except to cover `remove_container()` | `container.remove()` hits the Docker API and can raise. Without wrapping, `reconcile()` could propagate instead of returning `docker_error`. | Pending |
 
 ---
 
