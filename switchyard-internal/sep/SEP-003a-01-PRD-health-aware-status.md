@@ -28,6 +28,17 @@ behavior, not an edge case.
 
 ---
 
+## Scope Clarification
+
+**"Running means healthy" applies to startup readiness only.** SEP-003a
+ensures that the transition from `loading` to `running` requires backend
+health to succeed. Once a deployment is `running`, health polling stops.
+Continuous post-running health monitoring is a future concern, not part of
+this effort. The status `running` means "startup health succeeded," not
+"currently and continuously passing health checks."
+
+---
+
 ## Problem Statement
 
 Three code paths incorrectly set `DeploymentInfo.status = "running"` based
@@ -45,6 +56,9 @@ solely on Docker container state:
    it directly without normalizing to Switchyard lifecycle semantics):
    Running orphans are adopted as `running` with no health polling.
 
+Additionally, API routes swallow broad `Exception` around reconciliation,
+hiding config bugs, programming errors, and Docker state problems.
+
 The invariant is broken:
 
 > Switchyard `running` must mean backend health has succeeded.
@@ -57,28 +71,42 @@ The invariant is broken:
    `loading`, not `running`.
 2. Existing in-memory state is preserved during reconciliation (no status
    coercion from Docker state alone).
-3. Health polling is started for newly adopted containers so they naturally
+3. Health polling is started for newly adopted containers AND for existing
+   `loading` deployments that are missing a health task, so they naturally
    transition to `running` or `error`.
 4. Existing `error` state is preserved during reconciliation and does not
    trigger new health polling (error is terminal until user action).
 5. Bootstrap normalizes orphans from `OrphanDetector` into `loading` with
    health polling, keeping `OrphanDetector` as low-level Docker discovery.
-6. API list, detail, and status responses surface Docker `container_status`
-   separately from Switchyard serving `status`.
-7. `/v1/models` continues to gate on Switchyard `status == "running"`
-   (already correct; must not regress).
-8. When Docker is unreachable, reconciliation preserves in-memory state and
-   reports `container_status: "unknown"` rather than clearing state blindly.
-9. Startup timeout is configurable as a deployment-level override over a
-   runtime default, preventing premature `error` on large-model cold starts.
-10. All existing tests pass with updated expectations; new tests cover
+   Bootstrap normalization populates metadata (backend_host, backend_scheme,
+   served_model_name) from resolved deployment config.
+6. Reconciliation returns a structured `ReconcileResult` with
+   `container_status` and `docker_error`, giving API routes a concrete data
+   path for diagnostic fields.
+7. API list responses include `container_status` (but not full `docker_error`).
+   API detail and status responses include both `container_status` and
+   `docker_error` when present.
+8. API routes stop swallowing broad `Exception` around reconciliation;
+   Docker connectivity issues are represented by `ReconcileResult.docker_error`.
+9. `load_model()` treats `ReconcileResult.docker_error` as fatal and raises
+   `RuntimeError` before attempting to start a container.
+10. `/v1/models` continues to gate on Switchyard `status == "running"`
+    (already correct; must not regress).
+11. Startup timeout is configurable via a first-class Switchyard config
+    field with cascade: `DeploymentConfig.health_timeout_seconds` →
+    `RuntimeConfig.health_timeout_seconds` → default 300s. Not placed
+    inside `runtime.defaults`/`runtime_args` (those become vLLM CLI args).
+12. All existing tests pass with updated expectations; new tests cover
     health-aware adoption, coercion prevention, health poll lifecycle,
-    and Docker-unreachable degradation.
+    Docker-unreachable route matrix, and timeout cascade.
 
 ---
 
 ## Non-Goals
 
+- Continuous post-running health monitoring. SEP-003a corrects startup/
+  adoption readiness semantics; later diagnostics may add ongoing health
+  checks.
 - Logs endpoint (SEP-005).
 - Dry-run or preflight endpoint (SEP-005).
 - Detailed Docker command/volume/env previews (SEP-005).
@@ -100,6 +128,9 @@ The invariant is broken:
   reconciliation. This is low-risk: the task model already exists and is
   proven.
 - `error` is terminal until user action: deployments in `error` state will
-  not auto-recover via health polling. If the backend recovers on its own,
-  the operator must unload and reload. This is intentional — `error` signals
-  that something is wrong and needs attention, not a transient startup phase.
+  not auto-recover via health polling. Operator must explicitly unload and
+  reload. This is intentional — `error` signals that something is wrong
+  and needs attention, not a transient startup phase.
+- Qwen 27B on trainbox may still hit the 300s default timeout without an
+  explicit override. The configurable timeout addresses this, but the
+  default is intentionally conservative to catch genuine failures early.

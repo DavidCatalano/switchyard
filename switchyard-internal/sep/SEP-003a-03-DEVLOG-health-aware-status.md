@@ -1,59 +1,80 @@
-# DEVLOG
+# Devlog
 
-**SEP**: SEP-003a
 **Title**: Health-Aware Deployment Status Semantics
+**ID**: SEP-003a-03-DEVLOG-health-aware-status
+**PRD**: `SEP-003a-01-PRD-health-aware-status.md`
+**PLAN**: `SEP-003a-02-PLAN-health-aware-status.md`
 
 ---
 
-## 2026-05-10 — Initiation and Planning Review
+## Entries
 
-PRD, PLAN, and DEVLOG drafted from existing CONTEXT research
-(`SEP-003a-04-CONTEXT-health-aware-status.md`). Core problem: reconciliation
-and bootstrap adopt Docker-running containers as `running` without verifying
-backend health, violating the invariant that Switchyard `running` means
-serving-ready.
+- 2026-05-10 — SEP-003a planning is ready for implementation review. The
+  accepted direction is conservative health-aware reconciliation: Docker
+  `running` is not enough to mark a Switchyard deployment `running`.
+  Adopted Docker-running containers should enter `loading` and transition
+  through health polling.
 
-**Key design decisions from planning review**:
-
-- **Error is terminal**: Existing `error` state is preserved during
-  reconciliation and does not trigger new health polling. Operator must
-  explicitly unload + reload. Background health polling will not silently
-  flip error back to running.
-- **Load request rejections**: `running` → "already running", `loading` →
-  "already starting", `error` → "in error state, unload first". No implicit
-  restart to avoid race conditions.
-- **`_ensure_health_task()` with event-loop safety**: `reconcile()` is sync
-  and called from tests. The helper checks `asyncio.get_running_loop()`
-  before creating tasks.
-- **`ReconcileResult` observation shape**: Routes need `container_status`
-  data path. `DeploymentInfo` alone is insufficient.
-- **`OrphanDetector` stays as Docker discovery**: `bootstrap()` normalizes
-  orphan `DeploymentInfo(status="running")` into `loading` + health poll.
-  Keeps separation of concerns.
-- **Configurable health timeout**: Deployment-level
-  `health_timeout_seconds` override included in scope to address Qwen
-  cold-start scenarios (300s default may be too short).
-- **`container_status` on all endpoints**: List, detail, and status
-  endpoints all expose `container_status` for consistency.
-- **All decision log entries moved to Pending**: Awaiting user agreement
-  before implementation begins.
-
-**Artifacts**:
-- `SEP-003a-01-PRD-health-aware-status.md` — statement of need and success criteria
-- `SEP-003a-02-PLAN-health-aware-status.md` — 6-phase implementation plan
-- `SEP-003a-03-DEVLOG-health-aware-status.md` — this file
-- `SEP-003a-04-CONTEXT-health-aware-status.md` — research (pre-existing)
+- 2026-05-10 — The PLAN was revised to include the implementation
+  breadcrumbs needed for a long coding session: `ReconcileResult`,
+  `_ensure_health_task()`, Docker-unreachable route behavior, terminal
+  `error` semantics, first-class `health_timeout_seconds`, and
+  bootstrap/orphan scope verification.
 
 ---
 
 ## Cold Start / Handoff
 
-- PRD: `SEP-003a-01-PRD-health-aware-status.md`
-- PLAN: `SEP-003a-02-PLAN-health-aware-status.md`
-- CONTEXT: `SEP-003a-04-CONTEXT-health-aware-status.md`
-- Key code: `switchyard-api/src/switchyard/core/lifecycle.py`
-  (`_handle_running`, `bootstrap`, `_health_poll`)
-- Key code: `switchyard-api/src/switchyard/core/orphan.py`
-  (`OrphanDetector.scan()` — Docker discovery, unchanged)
-- Key code: `switchyard-api/src/switchyard/app.py`
-  (API routes — reconcile call sites, response shapes)
+Start by reading these SEP artifacts in order:
+
+1. `SEP-003a-01-PRD-health-aware-status.md`
+2. `SEP-003a-02-PLAN-health-aware-status.md`
+3. `SEP-003a-04-CONTEXT-health-aware-status.md`
+
+Then inspect these implementation files before editing:
+
+- `switchyard-api/src/switchyard/core/lifecycle.py`
+- `switchyard-api/src/switchyard/app.py`
+- `switchyard-api/src/switchyard/config/models.py`
+- `switchyard-api/src/switchyard/config/loader.py`
+- `switchyard-api/src/switchyard/core/orphan.py`
+
+Then inspect these test files:
+
+- `switchyard-api/tests/test_lifecycle.py`
+- `switchyard-api/tests/test_api.py`
+- `switchyard-api/tests/test_bootstrap.py`
+- `switchyard-api/tests/test_orphan.py`
+- `switchyard-api/tests/test_config_resolution.py`
+- `switchyard-api/tests/test_proxy.py`
+- `switchyard-api/tests/test_errors.py`
+
+Implementation must follow the PLAN order. Do not begin with API response
+fields; those depend on `ReconcileResult`. The first coding slice should be
+the reconciliation result shape, then `_ensure_health_task()`, then
+`_handle_running()` semantics.
+
+Key decisions to preserve:
+
+- Switchyard `running` means startup health has succeeded.
+- Docker `running` alone maps to Switchyard `loading` during adoption.
+- Existing `loading` state is preserved and should get a missing health task.
+- Existing `error` state is terminal until user action; do not restart health
+  polling for it.
+- `load_model()` treats Docker-unreachable reconciliation as fatal and must
+  not start a container.
+- Read routes preserve in-memory state when Docker is unreachable and expose
+  diagnostics instead of clearing state blindly.
+- Docker-unreachable unload should return structured 500 and preserve state
+  if an in-memory deployment cannot be stopped.
+- `health_timeout_seconds` is first-class Switchyard config, not a vLLM flag
+  and not part of `runtime_args`.
+- Continuous post-`running` health monitoring is out of scope.
+
+Quality gates from `switchyard-api/`:
+
+```bash
+uv run pytest
+uv run ruff check src tests --fix
+uv run mypy src/switchyard
+```
