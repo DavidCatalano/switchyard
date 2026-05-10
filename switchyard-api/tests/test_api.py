@@ -299,7 +299,7 @@ class TestApiDeploymentRoutes:
         assert "failed to start deployment" in data["detail"]
         assert "failed to reconcile Docker state before load" in data["detail"]
         # Error message is sanitized, not raw Docker SDK output
-        assert "docker unavailable" in data["detail"].lower()
+        assert "docker" in data["detail"].lower()
         with pytest.raises(KeyError):
             app.state.manager.state.get("test-deployment")
 

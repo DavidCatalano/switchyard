@@ -210,6 +210,53 @@ class TestLoadModel:
         with pytest.raises(KeyError):
             failing_mgr.state.get("failing-deployment")
 
+    async def test_load_preserves_adapter_served_model_name(self) -> None:
+        """Adapter metadata survives load_model normalization."""
+
+        class MetadataAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name=resolved.deployment_name,
+                    backend=resolved.backend,
+                    port=port,
+                    status="loading",
+                    container_id="metadata-123",
+                    metadata={
+                        "served_model_name": "adapter-served-model",
+                    },
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "running"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("metadata", MetadataAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9700),
+        )
+        resolved = _make_resolved(
+            backend="metadata",
+            overrides={"runtime_args": {"model": "/models/test"}},
+        )
+
+        info = await manager.load_model("test-deployment", resolved)
+
+        assert info.metadata["served_model_name"] == "adapter-served-model"
+        assert info.metadata["model"] == "/models/test"
+        assert info.metadata["backend_host"] == "localhost"
+
 
 class TestHealthCheck:
     """Background health check tests."""
@@ -968,6 +1015,56 @@ class TestHealthAwareReconciliation:
         assert result.info.status == "loading"
         assert "test-deployment" in manager._health_tasks
 
+    async def test_reconcile_existing_loading_replaces_done_health_task(self) -> None:
+        """Existing 'loading' deployment gets a new task if the old one is done."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 60.0
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="mock",
+            port=9500,
+            status="loading",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+
+        done_task = asyncio.create_task(asyncio.sleep(0))
+        await done_task
+        assert done_task.done()
+        manager._health_tasks["test-deployment"] = done_task
+
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+
+        replacement = manager._health_tasks["test-deployment"]
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert replacement is not done_task
+        assert not replacement.done()
+
+        replacement.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replacement
+
     # T1.3 — _ensure_health_task event-loop safety
 
     def test_ensure_health_task_no_event_loop(self) -> None:
@@ -1035,6 +1132,72 @@ class TestHealthAwareReconciliation:
         assert result.info is None
         assert result.container_status == "missing"
         assert result.docker_error is None
+
+    def test_reconcile_status_docker_error_preserves_in_memory_state(self) -> None:
+        """Docker status failures after lookup preserve state and report error."""
+
+        class StatusErrorContainer:
+            labels = {
+                "switchyard.managed": "true",
+                "switchyard.deployment": "test-deployment",
+            }
+            short_id = "abc123"
+            name = "test-container"
+
+            @property
+            def attrs(self) -> dict[str, Any]:
+                raise docker.errors.DockerException("status failed")
+
+            def remove(self, *, force: bool) -> None:
+                raise AssertionError("remove should not be called")
+
+        factory = _make_factory(StatusErrorContainer())
+        manager = self._make_manager(factory)
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(existing)
+        manager.port_allocator.allocate(port=9500)
+
+        result = manager.reconcile("test-deployment", _make_resolved())
+
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+        assert manager.state.get("test-deployment").status == "running"
+        assert 9500 in manager.port_allocator.allocated
+
+    def test_reconcile_remove_docker_error_preserves_in_memory_state(self) -> None:
+        """Docker remove failures after status lookup preserve state."""
+        container = _make_mock_container(status="exited")
+        container.remove.side_effect = docker.errors.DockerException(
+            "remove failed"
+        )
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(existing)
+        manager.port_allocator.allocate(port=9500)
+
+        result = manager.reconcile("test-deployment", _make_resolved())
+
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+        assert manager.state.get("test-deployment").status == "running"
+        assert 9500 in manager.port_allocator.allocated
 
     # T1.5 — load_model reconciliation result handling
 

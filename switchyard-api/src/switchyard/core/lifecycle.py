@@ -131,13 +131,34 @@ class LifecycleManager:
                     info=None, container_status="unknown"
                 )
 
-        # Wrap Docker calls; catch Docker SDK exceptions only
+        # Wrap all Docker calls; catch Docker SDK exceptions only
         try:
             client = self._docker_client_factory(resolved.docker_host)
             container = self._find_container(client, deployment_name)
+
+            if container is None:
+                # Container gone → clear any stale state
+                self._clear_deployment(deployment_name)
+                return ReconcileResult(
+                    info=None, container_status="missing"
+                )
+
+            status = self._get_container_status(container)
+
+            if status == "running":
+                return self._handle_running(
+                    deployment_name, container, resolved
+                )
+
+            # exited, dead, or other non-running state → clear + remove
+            remove_container(container)
+            self._clear_deployment(deployment_name)
+            return ReconcileResult(
+                info=None, container_status=status
+            )
         except docker.errors.DockerException as exc:
             logger.warning(
-                "reconcile: Docker unreachable for %s: %s",
+                "reconcile: Docker operation failed for %s: %s",
                 deployment_name, exc, exc_info=True,
             )
             # Preserve in-memory state, report diagnostic
@@ -148,27 +169,8 @@ class LifecycleManager:
             return ReconcileResult(
                 info=info,
                 container_status="unknown",
-                docker_error="docker unavailable during reconciliation",
+                docker_error="docker operation failed during reconciliation",
             )
-
-        if container is None:
-            # Container gone → clear any stale state
-            self._clear_deployment(deployment_name)
-            return ReconcileResult(
-                info=None, container_status="missing"
-            )
-
-        status = self._get_container_status(container)
-
-        if status == "running":
-            return self._handle_running(deployment_name, container, resolved)
-
-        # exited, dead, or other non-running state → clear + remove
-        remove_container(container)
-        self._clear_deployment(deployment_name)
-        return ReconcileResult(
-            info=None, container_status=status
-        )
 
     def _find_container(
         self, client: docker.DockerClient, deployment_name: str,
@@ -286,10 +288,10 @@ class LifecycleManager:
         Safe to call from sync context: if no event loop is running,
         logs a warning and returns without creating a task.
         """
-        # Check for existing non-cancelled task
+        # Check for existing non-cancelled (and not completed) task
         existing_task = self._health_tasks.get(deployment_name)
-        if existing_task is not None and not existing_task.cancelled():
-            return  # task already active
+        if existing_task is not None and not existing_task.done():
+            return  # task still active
 
         # Try to get a running event loop
         try:
@@ -428,8 +430,10 @@ class LifecycleManager:
             self.port_allocator.release(port)
             raise
 
-        # Build metadata from resolved config
-        metadata: dict[str, Any] = dict(resolved.runtime_args)
+        # Build metadata: start from adapter-provided values (e.g. served_model_name)
+        # then overlay first-class Switchyard metadata.
+        metadata: dict[str, Any] = dict(deployment.metadata)
+        metadata.update(resolved.runtime_args)
         metadata["backend_host"] = resolved.backend_host
         metadata["backend_scheme"] = resolved.backend_scheme
         # health_timeout_seconds is set on ResolvedDeployment and must not
