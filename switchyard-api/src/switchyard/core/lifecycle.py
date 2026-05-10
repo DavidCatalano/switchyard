@@ -279,7 +279,13 @@ class LifecycleManager:
         """
         # Reconcile first: clear stale state or adopt running container
         # Only block on "already running" if we actually found a Docker container
-        reconciled = self.reconcile(deployment_name, resolved)
+        try:
+            reconciled = self.reconcile(deployment_name, resolved)
+        except docker.errors.DockerException as exc:
+            raise RuntimeError(
+                "failed to reconcile Docker state before load: "
+                f"{exc}"
+            ) from exc
         if reconciled is not None and self._docker_client_factory is not None:
             # Container already running (adopted or preserved)
             raise ValueError(

@@ -280,6 +280,28 @@ class TestApiDeploymentRoutes:
         with pytest.raises(KeyError):
             app.state.manager.state.get("test-deployment")
 
+    def test_load_reconcile_docker_error_returns_structured_500(self) -> None:
+        """Docker reconciliation failure during load returns structured 500 JSON."""
+        from docker.errors import DockerException
+
+        app = create_app()
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=DockerException("cannot reach docker daemon")
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/deployments/test-deployment/load",
+        )
+
+        assert response.status_code == 500
+        data = response.json()
+        assert "detail" in data
+        assert "failed to start deployment" in data["detail"]
+        assert "failed to reconcile Docker state before load" in data["detail"]
+        assert "cannot reach docker daemon" in data["detail"]
+        with pytest.raises(KeyError):
+            app.state.manager.state.get("test-deployment")
+
     def test_load_non_runtime_error_surfaces(self) -> None:
         """Non-RuntimeError exceptions surface as real server errors."""
         from switchyard.core.adapter import BackendAdapter
