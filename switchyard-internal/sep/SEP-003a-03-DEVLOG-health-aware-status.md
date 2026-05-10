@@ -36,11 +36,15 @@
   Resolver callable passed into `bootstrap()` rather than direct import.
   Orphan skip-on-error decided. PLAN updated with findings.
 
+- 2026-05-10 — Phase 2 coding complete. `bootstrap()` normalizes orphans
+  to `loading` with metadata from resolver callable, skips orphans on
+  config error. All bootstrap/orphan tests updated and passing.
+
 ---
 
 ## Cold Start / Handoff
 
-Phase 1 is complete (T1.1–T1.6 checked). Phase 2–6 remain.
+Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3–6 remain.
 
 Start by reading these SEP artifacts in order:
 

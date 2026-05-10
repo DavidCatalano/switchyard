@@ -218,7 +218,7 @@ proper metadata, matching the reconciliation behavior. `OrphanDetector`
 stays unchanged.
 
 #### Tasks
-- [ ] **T2.0**: Verify bootstrap/orphan production path before changing it
+- [x] **T2.0**: Verify bootstrap/orphan production path before changing it
   - **Result (2026-05-10)**: `LifecycleManager.bootstrap()` is not wired
     into production startup from `create_app()`. T2 scope is minimal:
     align `bootstrap()` semantics and tests. No production startup wiring
@@ -231,12 +231,12 @@ stays unchanged.
     keep this phase limited to preserving existing tests and aligning
     semantics. Do not expand scope into a full orphan redesign.
 
-- [ ] **T2.1**: Write failing test
+- [x] **T2.1**: Write failing test
   - `test_bootstrap_adopt_orphans_as_loading_with_health`: Verify
     orphans are adopted as `loading`, have a health task, and metadata
     is populated (backend_host, backend_scheme, served_model_name)
 
-- [ ] **T2.2**: Update `bootstrap()` in `lifecycle.py`
+- [x] **T2.2**: Update `bootstrap()` in `lifecycle.py`
   - Keep `OrphanDetector` unchanged — it remains low-level Docker
     discovery returning `DeploymentInfo(status="running")`
   - Accept a resolver callable as an optional argument (e.g.
@@ -265,14 +265,14 @@ stays unchanged.
     **deployment name**, not the logical model name. Use this wording in
     comments/tests to avoid reinforcing the naming confusion.
 
-- [ ] **T2.3**: Update existing bootstrap tests
+- [x] **T2.3**: Update existing bootstrap tests
   - `test_bootstrap_adopt_orphans`: change expected status from
     `"running"` to `"loading"`
   - `test_bootstrap_adopted_skip_auto_start`: same change
   - Add assertion for health task presence
   - Verify orphan skip-on-error behavior (deployment not in config)
 
-- [ ] **T2.4**: Verify `test_orphan.py` still passes
+- [x] **T2.4**: Verify `test_orphan.py` still passes
   - `OrphanDetector.scan()` still creates `status="running"` objects —
     this is Docker truth at discovery time. No semantic change needed.
   - Verify no tests depend on the adopted status being Switchyard

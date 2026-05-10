@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -596,7 +597,11 @@ class LifecycleManager:
                 break
 
     async def bootstrap(
-        self, config: Config, docker_client: _DockerClient,
+        self,
+        config: Config,
+        docker_client: _DockerClient,
+        *,
+        resolve: Callable[[str], ResolvedDeployment] | None = None,
     ) -> None:
         """Run the startup bootstrap sequence.
 
@@ -604,9 +609,17 @@ class LifecycleManager:
         2. Run orphan detection (adopt running, remove crashed)
         3. Auto-start models with ``auto_start=True``
 
+        Orphan normalization: each running orphan from `OrphanDetector`
+        is normalized to ``DeploymentInfo(status="loading")`` with
+        metadata populated from the resolved deployment config.
+        Orphans whose config lookup fails are skipped with a warning.
+
         Args:
             config: Application configuration.
             docker_client: Docker SDK client instance.
+            resolve: Optional resolver callable mapping deployment
+                name to ``ResolvedDeployment``. If ``None``, metadata
+                is not populated but adoption still occurs.
 
         Raises:
             ConnectionError: If Docker daemon is not accessible.
@@ -620,12 +633,53 @@ class LifecycleManager:
         results = detector.scan()
 
         for orphan in results.adopted:
+            # Note: orphan.model_name carries the deployment name
+            # (naming artifact of OrphanDetector)
+            deployment_name = orphan.model_name
+
+            # Try to resolve deployment config for metadata
+            resolved = None
+            if resolve is not None:
+                try:
+                    resolved = resolve(deployment_name)
+                except Exception:
+                    logger.warning(
+                        "bootstrap: skipping orphan %s — "
+                        "config lookup failed (deployment may have been "
+                        "renamed or removed)",
+                        deployment_name, exc_info=True,
+                    )
+                    continue
+
+            # Build metadata from resolved config if available
+            metadata: dict[str, Any] = {}
+            if resolved is not None:
+                metadata = self._build_adopted_metadata(resolved)
+
+            # Normalize to loading with resolved port/metadata
+            orphan_loading = DeploymentInfo(
+                model_name=deployment_name,
+                backend=orphan.backend,
+                port=orphan.port,
+                status="loading",
+                container_id=orphan.container_id,
+                metadata=metadata,
+            )
+
             # Allocate the orphan's port so allocator knows it's taken
-            self.port_allocator.allocate(port=orphan.port)
-            self.state.add(orphan)
+            try:
+                self.port_allocator.allocate(port=orphan.port)
+            except ValueError:
+                pass  # already allocated
+
+            self.state.add(orphan_loading)
+
+            # Start health polling for the adopted orphan
+            self._ensure_health_task(deployment_name, orphan_loading)
+
             logger.info(
-                "bootstrap: adopted orphan %s (port=%d)",
-                orphan.model_name, orphan.port,
+                "bootstrap: adopted orphan %s as loading (port=%d)",
+                deployment_name, orphan.port,
             )
 
         for name in results.removed:
