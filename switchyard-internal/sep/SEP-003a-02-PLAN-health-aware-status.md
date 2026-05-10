@@ -514,6 +514,9 @@ Docker-unreachable behavior per route.
 | Pass resolver callable into `bootstrap()` rather than direct import | Avoid hard `lifecycle -> config.loader` import. Keep resolution at the app/config boundary. | Pending |
 | Orphan `DeploymentInfo.model_name` carries deployment key | Naming artifact of `OrphanDetector`. Adoption loop treats `orphan.model_name` as deployment name for config lookup. | Pending |
 | Skip orphans whose config lookup fails | Orphan adoption is best-effort recovery. A stale or renamed deployment should not prevent app startup or block other valid orphan adoptions. | Pending |
+| Skip orphans when `resolve=None` | Bootstrap without resolver means no metadata/health timeout; adoption would be incomplete and risky for future startup wiring. | Pending |
+| Catch only `KeyError`/`ValueError` in resolver | Broad `Exception` hides implementation bugs. Config resolution errors are `KeyError`/`ValueError`; others surface for developer visibility. | Pending |
+| Use `resolved.backend` when available in bootstrap | `orphan.backend` from legacy container name is unreliable. Use resolved config backend; warn on mismatch. | Pending |
 | Use `task.done()` instead of `task.cancelled()` in `_ensure_health_task()` | A completed health poll (success or exception) must be replaceable. `done()` covers both cancelled and normally-finished tasks. | Pending |
 | Expand `reconcile()` try/except to cover `remove_container()` | `container.remove()` hits the Docker API and can raise. Without wrapping, `reconcile()` could propagate instead of returning `docker_error`. | Pending |
 

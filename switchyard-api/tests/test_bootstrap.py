@@ -54,6 +54,8 @@ class _MockAdapter(BackendAdapter):
 async def manager() -> LifecycleManager:
     registry = AdapterRegistry()
     registry.register("mock", _MockAdapter)
+    # Also register "vllm" so bootstrap health tasks can run
+    registry.register("vllm", _MockAdapter)
     return LifecycleManager(
         registry=registry,
         port_allocator=PortAllocator(base_port=9500),
@@ -291,10 +293,10 @@ class TestBootstrap:
             manager.state.get("unknown-deployment")
         assert 9601 not in manager.port_allocator.allocated
 
-    async def test_bootstrap_adopt_without_resolver(
+    async def test_bootstrap_skips_orphan_without_resolver(
         self, manager: LifecycleManager, config: Config,
     ) -> None:
-        """Bootstrap works without resolver (no metadata, still loading)."""
+        """Orphans are skipped when no resolver is provided."""
         orphan = DeploymentInfo(
             model_name="test-deployment",
             backend="vllm",
@@ -313,10 +315,7 @@ class TestBootstrap:
         ):
             await manager.bootstrap(config, mock_docker)
 
-        stored = manager.state.get("test-deployment")
-        assert stored.status == "loading"
-        assert stored.port == 9600
-        # No metadata populated without resolver
-        assert stored.metadata == {}
-        # Health task still started
-        assert "test-deployment" in manager._health_tasks
+        # Orphan skipped without resolver
+        with pytest.raises(KeyError):
+            manager.state.get("test-deployment")
+        assert 9600 not in manager.port_allocator.allocated

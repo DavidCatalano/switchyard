@@ -40,6 +40,12 @@
   to `loading` with metadata from resolver callable, skips orphans on
   config error. All bootstrap/orphan tests updated and passing.
 
+- 2026-05-10 — Phase 2 review: three findings addressed:
+  1. Bootstrap uses `resolved.backend` instead of `orphan.backend`;
+     warns on mismatch. Tests register `vllm` backend so health tasks run.
+  2. `resolve=None` now skips orphans with warning (incomplete adoption).
+  3. Resolver catches only `KeyError`/`ValueError` (not broad `Exception`).
+
 ---
 
 ## Cold Start / Handoff

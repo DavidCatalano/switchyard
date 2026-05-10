@@ -637,29 +637,48 @@ class LifecycleManager:
             # (naming artifact of OrphanDetector)
             deployment_name = orphan.model_name
 
+            # Require a resolver for proper metadata/health polling
+            if resolve is None:
+                logger.warning(
+                    "bootstrap: skipping orphan %s — no resolver provided; "
+                    "cannot populate metadata or health timeout",
+                    deployment_name,
+                )
+                continue
+
             # Try to resolve deployment config for metadata
             resolved = None
-            if resolve is not None:
-                try:
-                    resolved = resolve(deployment_name)
-                except Exception:
-                    logger.warning(
-                        "bootstrap: skipping orphan %s — "
-                        "config lookup failed (deployment may have been "
-                        "renamed or removed)",
-                        deployment_name, exc_info=True,
-                    )
-                    continue
+            try:
+                resolved = resolve(deployment_name)
+            except (KeyError, ValueError) as exc:
+                logger.warning(
+                    "bootstrap: skipping orphan %s — "
+                    "config lookup failed (deployment may have been "
+                    "renamed or removed): %s",
+                    deployment_name, exc,
+                )
+                continue
 
             # Build metadata from resolved config if available
             metadata: dict[str, Any] = {}
+            # Use resolved.backend when available; warn on mismatch.
+            # orphan.backend comes from a legacy container name pattern,
+            # not from resolved config.
+            backend = orphan.backend
             if resolved is not None:
                 metadata = self._build_adopted_metadata(resolved)
+                if orphan.backend != resolved.backend:
+                    logger.warning(
+                        "bootstrap: orphan %s has backend %r from container "
+                        "name but config says %r; using resolved config",
+                        deployment_name, orphan.backend, resolved.backend,
+                    )
+                backend = resolved.backend
 
             # Normalize to loading with resolved port/metadata
             orphan_loading = DeploymentInfo(
                 model_name=deployment_name,
-                backend=orphan.backend,
+                backend=backend,
                 port=orphan.port,
                 status="loading",
                 container_id=orphan.container_id,
