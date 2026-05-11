@@ -51,11 +51,18 @@
   removed from all routes. `health` field derived from status.
   Docker-unreachable behavior verified per route.
 
+- 2026-05-10 — Phase 4 coding complete. `health_timeout_seconds` added to
+  `RuntimeConfig`, `DeploymentConfig`, and `ResolvedDeployment`. Cascade:
+  deployment > runtime > 300s default. Guard in `_merge_runtime_args()`
+  rejects placement in runtime args. `_build_adopted_metadata()` sets
+  `health_timeout_seconds` in metadata. All three paths (load, reconcile,
+  bootstrap) pass timeout to health poll.
+
 ---
 
 ## Cold Start / Handoff
 
-Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3 is complete (T3.1–T3.5 checked). Phase 4–6 remain.
+Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3 is complete (T3.1–T3.5 checked). Phase 4 is complete (T4.1–T4.3 checked). Phase 5–6 remain.
 
 Start by reading these SEP artifacts in order:
 

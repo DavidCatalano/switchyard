@@ -56,6 +56,7 @@ def _make_resolved(
         "container_options": {},
         "store_mounts": {},
         "model_defaults": None,
+        "health_timeout_seconds": 300.0,
     }
     if overrides:
         defaults.update(overrides)

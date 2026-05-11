@@ -55,6 +55,7 @@ def _make_resolved(
         "container_options": {},
         "store_mounts": {},
         "model_defaults": None,
+        "health_timeout_seconds": 300.0,
     }
     if overrides:
         defaults.update(overrides)
@@ -281,7 +282,9 @@ class TestHealthCheck:
         manager._get_adapter("mock")
         adapter = manager._adapters["mock"]
         adapter._healthy = False  # type: ignore[attr-defined]
-        resolved = _make_resolved()
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.05},
+        )
         info = await manager.load_model("test-deployment", resolved)
         assert info.status == "loading"
         await manager._wait_for_status("test-deployment", "error", timeout=5.0)
@@ -298,7 +301,9 @@ class TestHealthCheck:
         adapter = manager._adapters["mock"]
         adapter._healthy = False  # type: ignore[attr-defined]
 
-        resolved = _make_resolved()
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.05},
+        )
         info = await manager.load_model("test-deployment", resolved)
         assert info.status == "loading"
 

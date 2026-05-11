@@ -112,6 +112,11 @@ class RuntimeConfig(BaseModel):
     container_defaults: RuntimeContainerDefaults = Field(
         default_factory=RuntimeContainerDefaults
     )
+    health_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Seconds to wait for backend health before timing out.",
+    )
 
     _validate_backend = field_validator("backend")(_non_empty_string)
 
@@ -239,6 +244,11 @@ class DeploymentConfig(BaseModel):
     placement: Placement | None = None
     container_overrides: ContainerOverrides | None = None
     extra_args: dict[str, Any] = Field(default_factory=dict)
+    health_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Seconds to wait for backend health before timing out.",
+    )
 
     _validate_refs = field_validator("model", "runtime", "host")(
         _non_empty_string
@@ -339,6 +349,9 @@ class ResolvedDeployment:
 
     # Model defaults (portable)
     model_defaults: dict[str, Any] | None
+
+    # Health timeout (resolved cascade: deployment > runtime > default)
+    health_timeout_seconds: float
 
 
 class AppSettings(BaseSettings):

@@ -277,6 +277,10 @@ class LifecycleManager:
         metadata: dict[str, Any] = dict(resolved.runtime_args)
         metadata["backend_host"] = resolved.backend_host
         metadata["backend_scheme"] = resolved.backend_scheme
+        # health_timeout_seconds is a first-class resolved value; set it
+        # after copying runtime_args so it always wins over any leaked value
+        if hasattr(resolved, "health_timeout_seconds"):
+            metadata["health_timeout_seconds"] = resolved.health_timeout_seconds
         # served_model_name from runtime_args is authoritative; overrides
         # take precedence over raw model_defaults
         return metadata

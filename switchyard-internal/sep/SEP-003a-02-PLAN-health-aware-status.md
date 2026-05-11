@@ -346,7 +346,7 @@ preventing premature `error` on large-model cold starts. Config cascade
 uses first-class Switchyard fields, not `runtime_args`.
 
 #### Tasks
-- [ ] **T4.1**: Add `health_timeout_seconds` to config schema
+- [x] **T4.1**: Add `health_timeout_seconds` to config schema
   - `switchyard-api/src/switchyard/config/models.py`:
     - `DeploymentConfig`: add `health_timeout_seconds: float | None = None`
     - `RuntimeConfig`: add `health_timeout_seconds: float | None = None`
@@ -363,7 +363,7 @@ uses first-class Switchyard fields, not `runtime_args`.
   - NOT placed inside `runtime.defaults` or `runtime_args` (those become
     vLLM CLI args and would be passed to vLLM incorrectly)
 
-- [ ] **T4.2**: Use resolved timeout in `_health_poll()`
+- [x] **T4.2**: Use resolved timeout in `_health_poll()`
   - `LifecycleManager._health_poll()` uses
     `info.metadata.get("health_timeout_seconds", self._health_timeout)`
   - Pass the resolved timeout into metadata during `load_model()` and
@@ -375,7 +375,7 @@ uses first-class Switchyard fields, not `runtime_args`.
     three paths: fresh load, reconciliation adoption, and bootstrap
     normalization.
 
-- [ ] **T4.3**: Write tests in `test_config_resolution.py`
+- [x] **T4.3**: Write tests in `test_config_resolution.py`
   - Default 300s is used when neither deployment nor runtime sets it
   - Runtime-level default is used when deployment doesn't set it
   - Deployment-level override takes precedence over runtime default

@@ -13,8 +13,10 @@ Validates:
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from textwrap import dedent
+from typing import Any
 from unittest.mock import patch
 
 import pytest
@@ -24,6 +26,42 @@ from switchyard.config.loader import ConfigLoader, resolve_deployment
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+from switchyard.config.models import ResolvedDeployment
+from switchyard.core.adapter import DeploymentInfo
+
+
+def _make_resolved(
+    backend: str = "mock",
+    deployment_name: str = "test-deployment",
+    overrides: dict[str, Any] | None = None,
+) -> ResolvedDeployment:
+    """Create a minimal ResolvedDeployment for tests."""
+    defaults: dict[str, Any] = {
+        "deployment_name": deployment_name,
+        "model_name": "test-model",
+        "runtime_name": backend,
+        "backend": backend,
+        "host_name": "test-host",
+        "backend_host": "localhost",
+        "backend_scheme": "http",
+        "port_range": [9500, 9600],
+        "image": "mock:latest",
+        "internal_port": 8000,
+        "model_host_path": "/data/models/test",
+        "model_container_path": "/models/test",
+        "accelerator_ids": [],
+        "docker_host": None,
+        "docker_network": "model-runtime",
+        "runtime_args": {"model": "/models/test"},
+        "container_environment": {},
+        "container_options": {},
+        "store_mounts": {},
+        "model_defaults": None,
+        "health_timeout_seconds": 300.0,
+    }
+    if overrides:
+        defaults.update(overrides)
+    return ResolvedDeployment(**defaults)
 
 
 def _write_config(tmp_path: Path, content: str) -> Path:
@@ -1027,3 +1065,386 @@ class TestRealisticFixture:
         assert "/data/LLM/huggingface" in resolved.store_mounts
         assert resolved.store_mounts["/data/LLM/oobabooga/models"]["mode"] == "ro"
         assert resolved.store_mounts["/data/LLM/huggingface"]["mode"] == "rw"
+
+
+# ---------------------------------------------------------------------------
+# T4.1-T4.3 — Health timeout cascade
+# ---------------------------------------------------------------------------
+
+
+class TestHealthTimeoutCascade:
+    """health_timeout_seconds cascades: deployment > runtime > default."""
+
+    def test_default_300s_when_not_set(self, tmp_path: Path) -> None:
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.health_timeout_seconds == 300.0
+
+    def test_runtime_level_default_used(self, tmp_path: Path) -> None:
+        """Runtime-level default is used when deployment doesn't set it."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                health_timeout_seconds: 600
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.health_timeout_seconds == 600.0
+
+    def test_deployment_override_takes_precedence(self, tmp_path: Path) -> None:
+        """Deployment-level override takes precedence over runtime default."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                health_timeout_seconds: 600
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                health_timeout_seconds: 900
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.health_timeout_seconds == 900.0
+
+    def test_rejects_negative_value(self, tmp_path: Path) -> None:
+        """Negative health_timeout_seconds is rejected at config level."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                health_timeout_seconds: -10
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="greater than 0"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_rejects_zero_value(self, tmp_path: Path) -> None:
+        """Zero health_timeout_seconds is rejected at config level."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                health_timeout_seconds: 0
+        """)
+        path = _write_config(tmp_path, content)
+        with pytest.raises(ValueError, match="greater than 0"):
+            ConfigLoader.load_entity_config(path)
+
+    def test_rejects_health_timeout_in_runtime_overrides(self, tmp_path: Path) -> None:
+        """health_timeout_seconds in runtime_overrides is rejected."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  health_timeout_seconds: 600
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="not a runtime argument"):
+            resolve_deployment(config, "d1")
+
+    def test_rejects_health_timeout_in_extra_args(self, tmp_path: Path) -> None:
+        """health_timeout_seconds in extra_args is rejected."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  health_timeout_seconds: 600
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="not a runtime argument"):
+            resolve_deployment(config, "d1")
+
+    def test_integer_yaml_value_coerced_to_float(self, tmp_path: Path) -> None:
+        """Integer YAML value (e.g. 600) is coerced to float."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                health_timeout_seconds: 600
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.health_timeout_seconds == 600.0
+        assert isinstance(resolved.health_timeout_seconds, float)
+
+
+class TestHealthTimeoutLifecycle:
+    """health_timeout_seconds flows through metadata to _health_poll()."""
+
+    async def test_load_model_sets_health_timeout_in_metadata(self) -> None:
+        """load_model() passes resolved health_timeout_seconds to metadata."""
+        from switchyard.core.adapter import BackendAdapter
+        from switchyard.core.lifecycle import LifecycleManager
+        from switchyard.core.ports import PortAllocator
+        from switchyard.core.registry import AdapterRegistry
+
+        class MockAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test",
+                    backend="mock",
+                    port=port,
+                    status="loading",
+                    container_id="x",
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "running"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+        )
+        resolved = _make_resolved(
+            deployment_name="test-deployment",
+            overrides={"health_timeout_seconds": 600.0},
+        )
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.metadata["health_timeout_seconds"] == 600.0
+
+    async def test_short_timeout_triggers_error(self) -> None:
+        """Short health_timeout_seconds triggers error transition."""
+        from switchyard.core.adapter import BackendAdapter
+        from switchyard.core.lifecycle import LifecycleManager
+        from switchyard.core.ports import PortAllocator
+        from switchyard.core.registry import AdapterRegistry
+
+        class UnhealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test",
+                    backend="mock",
+                    port=port,
+                    status="loading",
+                    container_id="x",
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "error"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", UnhealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+        )
+        manager._health_interval = 0.01  # fast polling for test
+        resolved = _make_resolved(
+            deployment_name="test-deployment",
+            overrides={"health_timeout_seconds": 0.1},
+        )
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.status == "loading"
+        # Wait for timeout-based error transition
+        await manager._wait_for_status("test-deployment", "error", timeout=5.0)
+        assert manager.get_status("test-deployment") == "error"
+
+    async def test_long_timeout_keeps_loading(self) -> None:
+        """Long health_timeout_seconds keeps loading beyond manager default."""
+        from switchyard.core.adapter import BackendAdapter
+        from switchyard.core.lifecycle import LifecycleManager
+        from switchyard.core.ports import PortAllocator
+        from switchyard.core.registry import AdapterRegistry
+
+        class UnhealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test",
+                    backend="mock",
+                    port=port,
+                    status="loading",
+                    container_id="x",
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "error"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", UnhealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+        )
+        manager._health_interval = 0.01
+        manager._health_timeout = 0.05  # manager default is very short
+        # But resolved timeout is longer
+        resolved = _make_resolved(
+            deployment_name="test-deployment",
+            overrides={"health_timeout_seconds": 10.0},
+        )
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.status == "loading"
+        # After 0.1s, still loading (resolved timeout > manager default)
+        await asyncio.sleep(0.1)
+        assert manager.get_status("test-deployment") == "loading"
+        # Clean up
+        await manager.unload_model("test-deployment")

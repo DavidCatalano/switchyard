@@ -167,6 +167,7 @@ class TestVLLMAdapter:
                 "/host/cache": {"bind": "/cache", "mode": "rw"},
             },
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "abc123"
@@ -249,6 +250,7 @@ class TestVLLMAdapter:
             },
             store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "cpu123"
@@ -295,6 +297,7 @@ class TestVLLMAdapter:
             container_options={},
             store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "def456"
@@ -341,6 +344,7 @@ class TestVLLMAdapter:
             container_options={},
             store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "label123"
@@ -391,6 +395,7 @@ class TestVLLMAdapter:
             },
             store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "override123"
@@ -437,6 +442,7 @@ class TestVLLMAdapter:
             container_options={},
             store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
             model_defaults=None,
+            health_timeout_seconds=300.0,
         )
         mock_container = MagicMock()
         mock_container.short_id = "name123"
