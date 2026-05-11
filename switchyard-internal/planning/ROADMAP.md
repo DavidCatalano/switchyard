@@ -84,6 +84,16 @@ API work:
 - Reconcile in-memory deployment state with actual Docker container state before
   rejecting loads or reporting status.
 
+### SEP-003a — Health-Aware Deployment Status
+
+GitHub issue: #3
+
+Complete. Correct the invariant that Switchyard `running` means backend health
+has succeeded. Reconciliation now adopts Docker-running containers as `loading`
+with background health polling. `ReconcileResult` carries `container_status`
+and `docker_error` for diagnostic visibility. Health timeout is configurable
+via first-class `health_timeout_seconds` with cascade resolution.
+
 
 ## Planned Work
 

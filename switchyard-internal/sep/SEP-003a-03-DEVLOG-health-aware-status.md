@@ -58,11 +58,16 @@
   `health_timeout_seconds` in metadata. All three paths (load, reconcile,
   bootstrap) pass timeout to health poll.
 
+- 2026-05-10 — Phase 5 coding complete. Integration tests added for
+  reconcile adoption → health poll transitions (running/error). Docker-
+unreachable route matrix verified for all routes. Unload route now returns
+  structured 500 and preserves state when Docker/adapter stop fails.
+
 ---
 
 ## Cold Start / Handoff
 
-Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3 is complete (T3.1–T3.5 checked). Phase 4 is complete (T4.1–T4.3 checked). Phase 5–6 remain.
+Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3 is complete (T3.1–T3.5 checked). Phase 4 is complete (T4.1–T4.3 checked). Phase 5 is complete (T5.1–T5.6 checked). Phase 6 is complete (T6.1–T6.5 checked).
 
 Start by reading these SEP artifacts in order:
 

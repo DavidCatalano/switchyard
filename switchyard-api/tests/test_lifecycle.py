@@ -1362,3 +1362,75 @@ class TestHealthAwareReconciliation:
         assert info.status == "loading"
         adapter = manager._adapters["mock"]
         assert len(adapter.starts) == 1
+
+
+class TestIntegrationReconcileHealthPoll:
+    """T5.1/T5.2: End-to-end integration of reconcile adoption and health poll."""
+
+    async def test_reconcile_adopt_health_poll_to_running(self) -> None:
+        """Reconcile adopts as loading, health poll transitions to running."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class HealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", HealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 0.01
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        await manager._wait_for_status("test-deployment", "running", timeout=5.0)
+        assert manager.get_status("test-deployment") == "running"
+
+    async def test_reconcile_adopt_health_poll_to_error(self) -> None:
+        """Reconcile adopts as loading, health poll transitions to error."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class UnhealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "error"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", UnhealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 0.01
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.1},
+        )
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        await manager._wait_for_status("test-deployment", "error", timeout=5.0)
+        assert manager.get_status("test-deployment") == "error"

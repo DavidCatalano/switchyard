@@ -397,7 +397,7 @@ uses first-class Switchyard fields, not `runtime_args`.
 Docker-unreachable behavior per route.
 
 #### Tasks
-- [ ] **T5.1**: Integration test — reconcile adopts as `loading`, health
+- [x] **T5.1**: Integration test — reconcile adopts as `loading`, health
   poll transitions to `running`
   - Mock Docker factory returns running container
   - Call reconcile, verify adoption as `loading` and health task exists
@@ -405,26 +405,26 @@ Docker-unreachable behavior per route.
   - Wait for health poll, verify status transitions to `running`
   - Set `manager._health_interval = 0.01`
 
-- [ ] **T5.2**: Integration test — reconcile adopts as `loading`, health
+- [x] **T5.2**: Integration test — reconcile adopts as `loading`, health
   poll transitions to `error`
   - Same setup, adapter health returns `"error"`
   - Verify status transitions to `error` after timeout
   - Set `manager._health_interval = 0.01`
 
-- [ ] **T5.3**: Integration test — `/v1/models` excludes `loading`
+- [x] **T5.3**: Integration test — `/v1/models` excludes `loading`
   deployments
   - Only `running` deployments appear; `loading` and `error` do not
 
-- [ ] **T5.4**: Integration test — `POST /v1/chat/completions` rejects
+- [x] **T5.4**: Integration test — `POST /v1/chat/completions` rejects
   `loading` deployments
   - Deployment in `loading` state returns 400 ("not running")
 
-- [ ] **T5.5**: Edge case — load request for `error` deployment
+- [x] **T5.5**: Edge case — load request for `error` deployment
   - Deployment in `error` state, user triggers load
   - Verify rejected with "in error state, unload first"
   - No implicit stop/restart
 
-- [ ] **T5.6**: Docker-unreachable route matrix — verify each route
+- [x] **T5.6**: Docker-unreachable route matrix — verify each route
   handles `ReconcileResult.docker_error` correctly:
 
   | Route | Expected Behavior |
@@ -455,11 +455,11 @@ Docker-unreachable behavior per route.
 **Goal**: Ensure all changes are consistent, tests green, docs updated.
 
 #### Tasks
-- [ ] **T6.1**: Run full test suite, verify no regressions
-- [ ] **T6.2**: Run linter (`uv run ruff check src tests --fix`)
-- [ ] **T6.3**: Run type checker (`uv run mypy src/switchyard`)
-- [ ] **T6.4**: Update ROADMAP.md to reflect SEP-003a in progress
-- [ ] **T6.5**: Mark completed tasks in this PLAN
+- [x] **T6.1**: Run full test suite, verify no regressions
+- [x] **T6.2**: Run linter (`uv run ruff check src tests --fix`)
+- [x] **T6.3**: Run type checker (`uv run mypy src/switchyard`)
+- [x] **T6.4**: Update ROADMAP.md to reflect SEP-003a in progress
+- [x] **T6.5**: Mark completed tasks in this PLAN
 
 ---
 

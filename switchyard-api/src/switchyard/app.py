@@ -300,6 +300,9 @@ def _register_routes(app: FastAPI) -> None:
 
         Reconciles with Docker first so that stopped running containers
         after API restart are properly stopped rather than silently ignored.
+
+        If Docker is unreachable during stop, returns 500 and preserves
+        deployment state.
         """
         if deployment not in config.deployments:
             raise HTTPException(
@@ -317,6 +320,17 @@ def _register_routes(app: FastAPI) -> None:
         except KeyError:
             # Deployment not in state (already stopped/unloaded)
             return {"deployment_name": deployment, "status": "stopped"}
+        except Exception as exc:
+            # Docker/adapter stop failed — preserve state, return error
+            import logging
+            logging.getLogger(__name__).warning(
+                "unload: adapter.stop() failed for %s: %s",
+                deployment, exc, exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"failed to stop deployment {deployment!r}: {exc}",
+            )
 
         return {"deployment_name": deployment, "status": "stopped"}
 
