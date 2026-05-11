@@ -248,18 +248,18 @@ def _register_routes(app: FastAPI) -> None:
                 "started_at": info.started_at.isoformat(),
                 "container_status": result.container_status,
             }
-            if result.docker_error is not None:
-                resp["docker_error"] = result.docker_error
-            return resp
+        else:
+            resp = {
+                "deployment_name": deployment,
+                "status": "stopped",
+                "health": "unknown",
+                "container_status": result.container_status,
+            }
 
-        return {
-            "deployment_name": deployment,
-            "status": "stopped",
-            "health": "unknown",
-            "container_status": result.container_status,
-        }
         if result.docker_error is not None:
             resp["docker_error"] = result.docker_error
+
+        return resp
 
     @app.post("/api/deployments/{deployment}/load", status_code=202)
     async def load_deployment(deployment: str) -> dict[str, Any]:

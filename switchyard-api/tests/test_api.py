@@ -999,3 +999,24 @@ class TestApiDiagnosticFields:
 
         assert response.status_code == 200
         assert response.json()["choices"][0]["message"]["content"] == "Hi"
+
+    def test_status_stopped_docker_unreachable_includes_docker_error(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Status endpoint includes docker_error when Docker unreachable."""
+        app = create_app()
+        # No in-memory state — simulate fresh start with Docker unreachable
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app).get(
+            "/api/deployments/test-deployment/status",
+        )
+        data = response.json()
+        assert data["status"] == "stopped"
+        assert data["container_status"] == "unknown"
+        assert "docker_error" in data
+        assert "docker" in data["docker_error"].lower()
