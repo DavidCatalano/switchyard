@@ -88,11 +88,12 @@ API work:
 
 GitHub issue: #3
 
-Complete. Correct the invariant that Switchyard `running` means backend health
-has succeeded. Reconciliation now adopts Docker-running containers as `loading`
-with background health polling. `ReconcileResult` carries `container_status`
-and `docker_error` for diagnostic visibility. Health timeout is configurable
-via first-class `health_timeout_seconds` with cascade resolution.
+In final review. Corrects the invariant that Switchyard `running` means
+backend health has succeeded. Reconciliation adopts Docker-running
+containers as `loading` with background health polling. `ReconcileResult`
+carries `container_status` and `docker_error` for diagnostic visibility.
+Health timeout is configurable via first-class `health_timeout_seconds`
+with cascade resolution.
 
 
 ## Planned Work

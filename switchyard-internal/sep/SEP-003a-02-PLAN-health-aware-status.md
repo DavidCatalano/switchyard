@@ -591,28 +591,28 @@ uv run mypy src/switchyard
 ```
 
 ### Success Criteria Validation
-- [ ] All existing tests pass with updated expectations
-- [ ] New tests cover health-aware adoption (T1.1, T2.1)
-- [ ] New tests verify coercion prevention (T1.1)
-- [ ] New tests verify health task lifecycle (T1.1, T2.1)
-- [ ] `_ensure_health_task()` handles no-event-loop safely (T1.1)
-- [ ] `ReconcileResult` carries `container_status` and `docker_error` (T1.4)
-- [ ] `load_model()` treats `docker_error` as fatal (T1.5)
-- [ ] Read routes handle `docker_error` gracefully (T3.x)
-- [ ] Broad `except Exception: pass` removed from API routes (T3.1)
-- [ ] Bootstrap normalizes orphan metadata (T2.1, T2.2)
-- [ ] Bootstrap/orphan production path verified before changes (T2.0)
-- [ ] Integration tests validate full adoption -> health poll -> running flow (T5.1)
-- [ ] Integration tests validate adoption -> health poll -> error flow (T5.2)
-- [ ] `/v1/models` excludes non-`running` deployments (T5.3)
-- [ ] `/v1/chat/completions` rejects non-`running` deployments (T5.4)
-- [ ] `error` deployments rejected on load — require unload first (T5.5)
-- [ ] Docker-unreachable route matrix verified per route (T5.6)
-- [ ] Docker-unreachable unload returns 500 and preserves state (T5.6)
-- [ ] Configurable health timeout works at deployment level (T4.1–T4.3)
-- [ ] All health-poll tests use `_health_interval = 0.01` (all phases)
-- [ ] All quality gates pass (ruff, mypy, pytest)
-- [ ] No regressions in existing functionality
+- [x] All existing tests pass with updated expectations
+- [x] New tests cover health-aware adoption (T1.1, T2.1)
+- [x] New tests verify coercion prevention (T1.1)
+- [x] New tests verify health task lifecycle (T1.1, T2.1)
+- [x] `_ensure_health_task()` handles no-event-loop safely (T1.1)
+- [x] `ReconcileResult` carries `container_status` and `docker_error` (T1.4)
+- [x] `load_model()` treats `docker_error` as fatal (T1.5)
+- [x] Read routes handle `docker_error` gracefully (T3.x)
+- [x] Broad `except Exception: pass` removed from API routes (T3.1)
+- [x] Bootstrap normalizes orphan metadata (T2.1, T2.2)
+- [x] Bootstrap/orphan production path verified before changes (T2.0)
+- [x] Integration tests validate full adoption -> health poll -> running flow (T5.1)
+- [x] Integration tests validate adoption -> health poll -> error flow (T5.2)
+- [x] `/v1/models` excludes non-`running` deployments (T5.3)
+- [x] `/v1/chat/completions` rejects non-`running` deployments (T5.4)
+- [x] `error` deployments rejected on load — require unload first (T5.5)
+- [x] Docker-unreachable route matrix verified per route (T5.6)
+- [x] Docker-unreachable unload returns 500 and preserves state (T5.6)
+- [x] Configurable health timeout works at deployment level (T4.1–T4.3)
+- [x] All health-poll tests use `_health_interval = 0.01` (all phases)
+- [x] All quality gates pass (ruff, mypy, pytest)
+- [x] No regressions in existing functionality
 
 ---
 

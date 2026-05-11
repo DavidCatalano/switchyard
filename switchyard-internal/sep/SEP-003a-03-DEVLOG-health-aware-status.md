@@ -63,6 +63,11 @@
 unreachable route matrix verified for all routes. Unload route now returns
   structured 500 and preserves state when Docker/adapter stop fails.
 
+- 2026-05-10 — Review finding: `unload_model()` now cancels health task
+  AFTER `adapter.stop()` succeeds, preserving health task on failure.
+  Added test for loading deployment with active health task where stop
+  fails. PLAN success criteria marked complete.
+
 ---
 
 ## Cold Start / Handoff

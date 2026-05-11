@@ -353,6 +353,48 @@ class TestUnloadModel:
         """Unload unknown deployment is idempotent (no error)."""
         await manager.unload_model("nonexistent")  # no exception
 
+    async def test_unload_stop_failure_preserves_state_and_health_task(
+        self,
+    ) -> None:
+        """Stop failure preserves state and health task on loading deployment."""
+        class FailingAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None:
+                raise docker.errors.DockerException("connection refused")
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "error"
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", FailingAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+        )
+        resolved = _make_resolved()
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        original_task = manager._health_tasks["test-deployment"]
+
+        # Unload should fail, state and health task preserved
+        with pytest.raises(docker.errors.DockerException):
+            await manager.unload_model("test-deployment")
+
+        # Deployment state preserved
+        stored = manager.state.get("test-deployment")
+        assert stored.status == "loading"
+        # Health task preserved (not cancelled)
+        assert "test-deployment" in manager._health_tasks
+        assert manager._health_tasks["test-deployment"] is original_task
+
 
 class TestStatus:
     """get_status tests."""

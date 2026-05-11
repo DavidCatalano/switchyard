@@ -496,7 +496,11 @@ class LifecycleManager:
                 del self._health_tasks[deployment_name]
             return  # idempotent: already unloaded
 
-        # Cancel health poll
+        # Stop via adapter first — health task cancellation follows success
+        adapter = self._get_adapter(deployment.backend)
+        adapter.stop(deployment)
+
+        # Cancel health poll (after stop succeeds)
         if deployment_name in self._health_tasks:
             self._health_tasks[deployment_name].cancel()
             try:
@@ -504,10 +508,6 @@ class LifecycleManager:
             except asyncio.CancelledError:
                 pass
             del self._health_tasks[deployment_name]
-
-        # Stop via adapter
-        adapter = self._get_adapter(deployment.backend)
-        adapter.stop(deployment)
 
         # Release port
         self.port_allocator.release(deployment.port)
