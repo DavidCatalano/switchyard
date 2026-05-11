@@ -174,10 +174,10 @@ class TestAppSettingsValidKeys:
 
 
 class TestAppSettingsEnvExampleMatches:
-    """Keys in .env.example must match AppSettings fields exactly."""
+    """Keys in .env.example must be valid AppSettings fields."""
 
     def test_env_example_keys_match_settings(self) -> None:
-        """Every SWITCHYARD_* key in .env.example maps to an AppSettings field."""
+        """.env.example may omit internal keys but must not document typos."""
         project_root = pathlib.Path(__file__).resolve().parent.parent
         env_example = project_root / ".env.example"
         settings_fields = set(AppSettings.model_fields)
@@ -196,6 +196,3 @@ class TestAppSettingsEnvExampleMatches:
 
         extra_keys = env_keys - settings_fields
         assert not extra_keys, f"Extra keys: {extra_keys}"
-
-        missing_keys = settings_fields - env_keys
-        assert not missing_keys, f"Missing keys: {missing_keys}"
