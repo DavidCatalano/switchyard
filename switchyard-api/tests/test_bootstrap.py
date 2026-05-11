@@ -148,6 +148,7 @@ class TestBootstrap:
         # Metadata populated from resolved config
         assert stored.metadata["backend_host"] == "localhost"
         assert stored.metadata["backend_scheme"] == "http"
+        assert stored.metadata["health_timeout_seconds"] == 300.0
         # Health task started
         assert "test-deployment" in manager._health_tasks
 

@@ -622,8 +622,10 @@ class LifecycleManager:
             config: Application configuration.
             docker_client: Docker SDK client instance.
             resolve: Optional resolver callable mapping deployment
-                name to ``ResolvedDeployment``. If ``None``, metadata
-                is not populated but adoption still occurs.
+                name to ``ResolvedDeployment``. A resolver must be
+                provided for orphan adoption; without it, orphans are
+                skipped with a warning (incomplete adoption is risky
+                for future startup wiring).
 
         Raises:
             ConnectionError: If Docker daemon is not accessible.

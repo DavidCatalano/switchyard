@@ -838,6 +838,7 @@ class TestHealthAwareReconciliation:
         assert result.info is not None
         assert result.info.status == "loading"
         assert result.info.port == 9510
+        assert result.info.metadata["health_timeout_seconds"] == 300.0
         assert result.container_status == "running"
         assert 9510 in manager.port_allocator.allocated
 
