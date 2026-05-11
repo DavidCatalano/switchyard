@@ -292,7 +292,7 @@ responses, stop swallowing broad `Exception`, and handle
 `ReconcileResult` properly.
 
 #### Tasks
-- [ ] **T3.1**: Replace broad `except Exception: pass` in API routes
+- [x] **T3.1**: Replace broad `except Exception: pass` in API routes
   - In `switchyard-api/src/switchyard/app.py`, find all reconciliation
     blocks that do `try: manager.reconcile(...) except Exception: pass`
   - Replace with explicit `ReconcileResult` handling:
@@ -302,7 +302,7 @@ responses, stop swallowing broad `Exception`, and handle
       `result.docker_error` / `result.container_status == "unknown"`
   - This makes config bugs and programming errors visible again
 
-- [ ] **T3.2**: Update `GET /api/deployments` response shape
+- [x] **T3.2**: Update `GET /api/deployments` response shape
   - Add `container_status` field: from `ReconcileResult.container_status`
   - Add `health` field: derive from status
     - `"running"` -> `"healthy"`, `"loading"` -> `"starting"`,
@@ -311,7 +311,7 @@ responses, stop swallowing broad `Exception`, and handle
     detail/status provide that)
   - Write integration test verifying response shape
 
-- [ ] **T3.3**: Update `GET /api/deployments/{deployment}/status` response
+- [x] **T3.3**: Update `GET /api/deployments/{deployment}/status` response
   - Replace hardcoded `"health": "unknown"` with derived value (same
     mapping as T3.2)
   - Add `container_status` field from `ReconcileResult`
@@ -320,13 +320,13 @@ responses, stop swallowing broad `Exception`, and handle
   - Write test verifying response shape for running, loading, and
     Docker-unreachable states
 
-- [ ] **T3.4**: Update `GET /api/deployments/{deployment}` (detail)
+- [x] **T3.4**: Update `GET /api/deployments/{deployment}` (detail)
   - Add `container_status` field for consistency with list and status
     endpoints
   - Include `docker_error` when present (non-None)
   - Write test verifying response shape
 
-- [ ] **T3.5**: Update `POST /api/deployments/{deployment}/load`
+- [x] **T3.5**: Update `POST /api/deployments/{deployment}/load`
   - With `ReconcileResult`, `load_model()` now properly raises
     `RuntimeError` on Docker unreachable. Verify the route handler
     returns structured 500 (already does via `except RuntimeError`).

@@ -143,6 +143,15 @@ def _register_routes(app: FastAPI) -> None:
 
     # ── /api/ deployment lifecycle routes ──────────────────────────
 
+    def _derive_health(status: str) -> str:
+        """Derive health string from deployment status."""
+        return {
+            "running": "healthy",
+            "loading": "starting",
+            "error": "unhealthy",
+            "stopped": "unknown",
+        }.get(status, "unknown")
+
     @app.get("/api/deployments")
     async def list_deployments() -> list[dict[str, Any]]:
         """List all configured deployments with current status.
@@ -152,16 +161,12 @@ def _register_routes(app: FastAPI) -> None:
         """
         results: list[dict[str, Any]] = []
         for dep_name, dep_cfg in config.deployments.items():
-            try:
-                resolved = resolve_deployment(config, dep_name)
-                manager.reconcile(dep_name, resolved)
-            except Exception:
-                pass  # Docker unreachable or config broken
+            resolved = resolve_deployment(config, dep_name)
+            result = manager.reconcile(dep_name, resolved)
 
-            try:
-                info = manager.state.get(dep_name)
-                status = info.status
-            except KeyError:
+            if result.info is not None:
+                status = result.info.status
+            else:
                 status = "stopped"
             results.append({
                 "deployment_name": dep_name,
@@ -169,6 +174,8 @@ def _register_routes(app: FastAPI) -> None:
                 "runtime": dep_cfg.runtime,
                 "host": dep_cfg.host,
                 "status": status,
+                "health": _derive_health(status),
+                "container_status": result.container_status,
             })
         return results
 
@@ -186,23 +193,16 @@ def _register_routes(app: FastAPI) -> None:
             )
         dep_cfg = config.deployments[deployment]
 
-        # Reconcile before reporting
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable
+        # Resolve and reconcile
+        resolved = resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
 
-        try:
-            info = manager.state.get(deployment)
-            status = info.status
-        except KeyError:
+        if result.info is not None:
+            status = result.info.status
+        else:
             status = "stopped"
 
-        # Resolve store paths for the detail response
-        resolved = resolve_deployment(config, deployment)
-
-        return {
+        resp: dict[str, Any] = {
             "deployment_name": deployment,
             "model": dep_cfg.model,
             "runtime": dep_cfg.runtime,
@@ -216,7 +216,12 @@ def _register_routes(app: FastAPI) -> None:
             "model_container_path": resolved.model_container_path,
             "runtime_args": _mask_sensitive_args(resolved.runtime_args),
             "status": status,
+            "health": _derive_health(status),
+            "container_status": result.container_status,
         }
+        if result.docker_error is not None:
+            resp["docker_error"] = result.docker_error
+        return resp
 
     @app.get("/api/deployments/{deployment}/status")
     async def get_deployment_status(deployment: str) -> dict[str, Any]:
@@ -227,29 +232,34 @@ def _register_routes(app: FastAPI) -> None:
                 detail=f"deployment {deployment!r} not found in config",
             )
 
-        # Reconcile: adopt running containers, clear stale state
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable or config broken
+        # Resolve and reconcile
+        resolved = resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
 
-        try:
-            info = manager.state.get(deployment)
-            return {
+        if result.info is not None:
+            info = result.info
+            status = info.status
+            resp: dict[str, Any] = {
                 "deployment_name": info.model_name,
-                "status": info.status,
+                "status": status,
+                "health": _derive_health(status),
                 "port": info.port,
                 "container_id": info.container_id,
                 "started_at": info.started_at.isoformat(),
-                "health": "unknown",
+                "container_status": result.container_status,
             }
-        except KeyError:
-            return {
-                "deployment_name": deployment,
-                "status": "stopped",
-                "health": "unknown",
-            }
+            if result.docker_error is not None:
+                resp["docker_error"] = result.docker_error
+            return resp
+
+        return {
+            "deployment_name": deployment,
+            "status": "stopped",
+            "health": "unknown",
+            "container_status": result.container_status,
+        }
+        if result.docker_error is not None:
+            resp["docker_error"] = result.docker_error
 
     @app.post("/api/deployments/{deployment}/load", status_code=202)
     async def load_deployment(deployment: str) -> dict[str, Any]:
@@ -299,11 +309,8 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile first: if a running container exists after API restart,
         # adopt it into state so it can be stopped
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable
+        resolved = resolve_deployment(config, deployment)
+        manager.reconcile(deployment, resolved)
 
         try:
             await manager.unload_model(deployment)
@@ -324,11 +331,8 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile to adopt running containers, clear stale state
         if deployment in config.deployments:
-            try:
-                resolved = resolve_deployment(config, deployment)
-                manager.reconcile(deployment, resolved)
-            except Exception:
-                pass  # Docker unreachable
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
 
         dep = _get_running_deployment(deployment, manager)
         backend_url = _backend_url(dep, config)
@@ -350,11 +354,9 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile all configured deployments
         for dep_name in config.deployments:
-            try:
-                resolved = resolve_deployment(config, dep_name)
-                manager.reconcile(dep_name, resolved)
-            except Exception:
-                pass  # Docker unreachable or config broken
+            resolved = resolve_deployment(config, dep_name)
+            manager.reconcile(dep_name, resolved)
+            # Docker errors are informational — state preserved, don't clear
 
         deployments = manager.state.list_deployments()
         models = [
@@ -382,11 +384,9 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile to adopt running containers, clear stale state
         if deployment_name in config.deployments:
-            try:
-                resolved = resolve_deployment(config, deployment_name)
-                manager.reconcile(deployment_name, resolved)
-            except Exception:
-                pass  # Docker unreachable
+            resolved = resolve_deployment(config, deployment_name)
+            manager.reconcile(deployment_name, resolved)
+            # Docker errors are informational — state preserved, don't clear
 
         deployment = _get_running_deployment(deployment_name, manager)
         backend_url = _backend_url(deployment, config)

@@ -715,3 +715,287 @@ class TestOpenAIModels:
         assert len(data["data"]) == 1
         assert data["data"][0]["id"] == "test-deployment"
         assert data["data"][0]["id"] != "completely-different-name"
+
+
+class TestApiDiagnosticFields:
+    """Phase 3: API response shape tests (T3.2-T3.5)."""
+
+    def test_list_includes_health_and_container_status(self) -> None:
+        """GET /api/deployments includes health and container_status fields."""
+        app = create_app()
+        response = TestClient(app).get("/api/deployments")
+        assert response.status_code == 200
+        data = response.json()
+        assert len(data) == 1
+        assert "health" in data[0]
+        assert "container_status" in data[0]
+        # Stopped deployment
+        assert data[0]["health"] == "unknown"
+        assert data[0]["container_status"] == "missing"
+        # docker_error NOT in list response
+        assert "docker_error" not in data[0]
+
+    def test_list_running_has_healthy(self, _mock_docker: MagicMock) -> None:
+        """Running deployment has health='healthy' and container_status='running'."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+
+        response = TestClient(app).get("/api/deployments")
+        data = response.json()
+        assert data[0]["health"] == "healthy"
+        assert data[0]["container_status"] == "running"
+
+    def test_list_docker_unreachable_preserves_state(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Docker unreachable preserves in-memory state, container_status='unknown'."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+        # Simulate Docker unreachable
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app).get("/api/deployments")
+        data = response.json()
+        assert data[0]["status"] == "running"  # preserved
+        assert data[0]["container_status"] == "unknown"
+        assert "docker_error" not in data[0]
+
+    def test_status_has_health_and_container_status(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Status endpoint has derived health and container_status."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+
+        response = TestClient(app).get(
+            "/api/deployments/test-deployment/status",
+        )
+        data = response.json()
+        assert data["health"] == "healthy"
+        assert data["container_status"] == "running"
+
+    def test_status_loading_has_starting(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Loading deployment has health='starting'."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_container = _mock_docker.containers.get.return_value
+        _mock_docker.containers.list.return_value = [mock_container]
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="loading",
+                container_id="abc123",
+            )
+        )
+
+        response = TestClient(app).get(
+            "/api/deployments/test-deployment/status",
+        )
+        data = response.json()
+        assert data["health"] == "starting"
+
+    def test_status_docker_unreachable_includes_docker_error(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Status endpoint includes docker_error when Docker unreachable."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app).get(
+            "/api/deployments/test-deployment/status",
+        )
+        data = response.json()
+        assert data["status"] == "running"  # preserved
+        assert data["container_status"] == "unknown"
+        assert "docker_error" in data
+        assert "docker" in data["docker_error"].lower()
+
+    def test_detail_has_container_status(self) -> None:
+        """Detail endpoint includes container_status."""
+        app = create_app()
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        data = response.json()
+        assert "container_status" in data
+        assert "health" in data
+
+    def test_detail_docker_unreachable_includes_docker_error(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Detail endpoint includes docker_error when Docker unreachable."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app).get("/api/deployments/test-deployment")
+        data = response.json()
+        assert data["status"] == "running"  # preserved
+        assert data["container_status"] == "unknown"
+        assert "docker_error" in data
+
+    def test_load_docker_unreachable_returns_500(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """Docker unreachable during load returns structured 500."""
+        app = create_app()
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app, raise_server_exceptions=False).post(
+            "/api/deployments/test-deployment/load",
+        )
+        assert response.status_code == 500
+        data = response.json()
+        assert "detail" in data
+        assert "docker" in data["detail"].lower()
+        # No container started
+        with pytest.raises(KeyError):
+            app.state.manager.state.get("test-deployment")
+
+    def test_v1_models_docker_unreachable_preserves_running(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """/v1/models preserves running state when Docker unreachable."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+            )
+        )
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        response = TestClient(app).get("/v1/models")
+        data = response.json()
+        # Running deployment still listed despite Docker being unreachable
+        assert len(data["data"]) == 1
+        assert data["data"][0]["id"] == "test-deployment"
+
+    def test_chat_completions_docker_unreachable_preserves_running(
+        self, _mock_docker: MagicMock,
+    ) -> None:
+        """/v1/chat/completions preserves running state when Docker unreachable."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"choices": [{"message": {"content": "Hi"}}]}
+        mock_client.post.return_value = mock_response
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+
+        app = create_app()
+        app.state.manager.state.add(
+            DeploymentInfo(
+                model_name="test-deployment",
+                backend="vllm",
+                port=9001,
+                status="running",
+                container_id="abc123",
+                metadata={
+                    "backend_host": "127.0.0.1",
+                    "backend_scheme": "http",
+                },
+            )
+        )
+        app.state.manager._docker_client_factory = MagicMock(
+            side_effect=__import__("docker").errors.DockerException(
+                "connection refused"
+            ),
+        )
+
+        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+            response = TestClient(app).post(
+                "/v1/chat/completions",
+                json={"model": "test-deployment", "messages": []},
+            )
+
+        assert response.status_code == 200
+        assert response.json()["choices"][0]["message"]["content"] == "Hi"

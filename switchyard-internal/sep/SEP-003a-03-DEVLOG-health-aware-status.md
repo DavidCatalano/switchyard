@@ -46,11 +46,16 @@
   2. `resolve=None` now skips orphans with warning (incomplete adoption).
   3. Resolver catches only `KeyError`/`ValueError` (not broad `Exception`).
 
+- 2026-05-10 — Phase 3 coding complete. API routes now surface
+  `container_status` and `docker_error`. Broad `except Exception: pass`
+  removed from all routes. `health` field derived from status.
+  Docker-unreachable behavior verified per route.
+
 ---
 
 ## Cold Start / Handoff
 
-Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3–6 remain.
+Phase 1 is complete (T1.1–T1.6 checked). Phase 2 is complete (T2.0–T2.4 checked). Phase 3 is complete (T3.1–T3.5 checked). Phase 4–6 remain.
 
 Start by reading these SEP artifacts in order:
 
