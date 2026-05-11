@@ -2,7 +2,7 @@
 
 **Title**: Health-Aware Deployment Status Semantics
 **ID**: SEP-003a-02-PLAN-health-aware-status
-**Status**: Draft
+**Status**: Complete
 **Date**: 2026-05-10
 **PRD**: SEP-003a-01-PRD-health-aware-status.md
 
@@ -492,33 +492,33 @@ Docker-unreachable behavior per route.
 
 | Decision | Reason | State |
 |----------|--------|-------|
-| Adopt Docker-running containers as `loading` (Option A) | Conservative, simple, preserves existing health polling model, no request-path latency | Pending |
-| Preserve existing in-memory status during reconciliation | Docker state alone is insufficient to override a health-determined state | Pending |
-| Start health task for newly adopted AND existing loading without task | Ensures health polling resumes after sync reconcile skips task creation. Existing `running` and `error` are excluded. | Pending |
-| `error` is terminal until user action | `error` signals something is wrong and needs attention, not a transient startup phase. Background health polling should not silently flip it back to `running`. | Pending |
-| Reject `loading` deployments on load request | Container is already running in Docker; restarting would be disruptive. User should wait or unload first. | Pending |
-| Reject `error` deployments on load request (require unload first) | Avoid race conditions and implicit restart. Operator must explicitly unload before reloading. No hidden restart logic. | Pending |
-| Add `container_status` to all API responses; `docker_error` to detail/status only | Operators need both axes (container state + serving state). List endpoint stays compact; detail/status provide full diagnostics. | Pending |
-| Derive `health` from deployment status | Simpler than introducing a separate health state machine; sufficient for current needs. | Pending |
-| No synchronous health probes on list/status routes | Avoid request-path latency spikes; background polling is sufficient. | Pending |
-| `ReconcileResult.docker_error` is fatal for `load_model()` | Docker unreachable means we can't safely start a container. Fail fast to prevent duplicate containers. | Pending |
-| `ReconcileResult.docker_error` is informational for read routes | Read routes preserve state and surface the error for diagnosis. Do not clear state blindly. | Pending |
-| Add deployment-level `health_timeout_seconds` via first-class config | Qwen 27B on trainbox may need more than 300s for cold start. Not in `runtime_args` (those become vLLM CLI flags). | Pending |
-| `OrphanDetector` stays as Docker discovery; `bootstrap()` normalizes | Keep separation of concerns: `OrphanDetector` reports Docker truth, `bootstrap()` applies Switchyard lifecycle semantics and populates metadata. | Pending |
-| `_ensure_health_task()` with event-loop safety | `reconcile()` is sync and called from tests; must not crash when no event loop is running. | Pending |
-| Remove broad `except Exception: pass` in API reconciliation | Broad exception swallowing hides config bugs, programming errors, and Docker state problems. | Pending |
-| "Running means healthy" applies to startup only | Health polling stops once status becomes `running`. Continuous post-running monitoring is out of scope. | Pending |
-| Docker-unreachable unload preserves state and returns 500 | Clearing state after a failed Docker stop would recreate the stale-state problem this SEP is trying to avoid. | Pending |
-| No changes to `/v1/models` | Already correctly gates on `status == "running"`; fix makes the gate more truthful. | Pending |
-| Bootstrap scope is minimal: align semantics and tests only | `bootstrap()` is not wired into `create_app()` production startup. No production startup wiring or orphan redesign in SEP-003a. | Pending |
-| Pass resolver callable into `bootstrap()` rather than direct import | Avoid hard `lifecycle -> config.loader` import. Keep resolution at the app/config boundary. | Pending |
-| Orphan `DeploymentInfo.model_name` carries deployment key | Naming artifact of `OrphanDetector`. Adoption loop treats `orphan.model_name` as deployment name for config lookup. | Pending |
-| Skip orphans whose config lookup fails | Orphan adoption is best-effort recovery. A stale or renamed deployment should not prevent app startup or block other valid orphan adoptions. | Pending |
-| Skip orphans when `resolve=None` | Bootstrap without resolver means no metadata/health timeout; adoption would be incomplete and risky for future startup wiring. | Pending |
-| Catch only `KeyError`/`ValueError` in resolver | Broad `Exception` hides implementation bugs. Config resolution errors are `KeyError`/`ValueError`; others surface for developer visibility. | Pending |
-| Use `resolved.backend` when available in bootstrap | `orphan.backend` from legacy container name is unreliable. Use resolved config backend; warn on mismatch. | Pending |
-| Use `task.done()` instead of `task.cancelled()` in `_ensure_health_task()` | A completed health poll (success or exception) must be replaceable. `done()` covers both cancelled and normally-finished tasks. | Pending |
-| Expand `reconcile()` try/except to cover `remove_container()` | `container.remove()` hits the Docker API and can raise. Without wrapping, `reconcile()` could propagate instead of returning `docker_error`. | Pending |
+| Adopt Docker-running containers as `loading` (Option A) | Conservative, simple, preserves existing health polling model, no request-path latency | Agreed |
+| Preserve existing in-memory status during reconciliation | Docker state alone is insufficient to override a health-determined state | Agreed |
+| Start health task for newly adopted AND existing loading without task | Ensures health polling resumes after sync reconcile skips task creation. Existing `running` and `error` are excluded. | Agreed |
+| `error` is terminal until user action | `error` signals something is wrong and needs attention, not a transient startup phase. Background health polling should not silently flip it back to `running`. | Agreed |
+| Reject `loading` deployments on load request | Container is already running in Docker; restarting would be disruptive. User should wait or unload first. | Agreed |
+| Reject `error` deployments on load request (require unload first) | Avoid race conditions and implicit restart. Operator must explicitly unload before reloading. No hidden restart logic. | Agreed |
+| Add `container_status` to all API responses; `docker_error` to detail/status only | Operators need both axes (container state + serving state). List endpoint stays compact; detail/status provide full diagnostics. | Agreed |
+| Derive `health` from deployment status | Simpler than introducing a separate health state machine; sufficient for current needs. | Agreed |
+| No synchronous health probes on list/status routes | Avoid request-path latency spikes; background polling is sufficient. | Agreed |
+| `ReconcileResult.docker_error` is fatal for `load_model()` | Docker unreachable means we can't safely start a container. Fail fast to prevent duplicate containers. | Agreed |
+| `ReconcileResult.docker_error` is informational for read routes | Read routes preserve state and surface the error for diagnosis. Do not clear state blindly. | Agreed |
+| Add deployment-level `health_timeout_seconds` via first-class config | Qwen 27B on trainbox may need more than 300s for cold start. Not in `runtime_args` (those become vLLM CLI flags). | Agreed |
+| `OrphanDetector` stays as Docker discovery; `bootstrap()` normalizes | Keep separation of concerns: `OrphanDetector` reports Docker truth, `bootstrap()` applies Switchyard lifecycle semantics and populates metadata. | Agreed |
+| `_ensure_health_task()` with event-loop safety | `reconcile()` is sync and called from tests; must not crash when no event loop is running. | Agreed |
+| Remove broad `except Exception: pass` in API reconciliation | Broad exception swallowing hides config bugs, programming errors, and Docker state problems. | Agreed |
+| "Running means healthy" applies to startup only | Health polling stops once status becomes `running`. Continuous post-running monitoring is out of scope. | Agreed |
+| Docker-unreachable unload preserves state and returns 500 | Clearing state after a failed Docker stop would recreate the stale-state problem this SEP is trying to avoid. | Agreed |
+| No changes to `/v1/models` | Already correctly gates on `status == "running"`; fix makes the gate more truthful. | Agreed |
+| Bootstrap scope is minimal: align semantics and tests only | `bootstrap()` is not wired into `create_app()` production startup. No production startup wiring or orphan redesign in SEP-003a. | Agreed |
+| Pass resolver callable into `bootstrap()` rather than direct import | Avoid hard `lifecycle -> config.loader` import. Keep resolution at the app/config boundary. | Agreed |
+| Orphan `DeploymentInfo.model_name` carries deployment key | Naming artifact of `OrphanDetector`. Adoption loop treats `orphan.model_name` as deployment name for config lookup. | Agreed |
+| Skip orphans whose config lookup fails | Orphan adoption is best-effort recovery. A stale or renamed deployment should not prevent app startup or block other valid orphan adoptions. | Agreed |
+| Skip orphans when `resolve=None` | Bootstrap without resolver means no metadata/health timeout; adoption would be incomplete and risky for future startup wiring. | Agreed |
+| Catch only `KeyError`/`ValueError` in resolver | Broad `Exception` hides implementation bugs. Config resolution errors are `KeyError`/`ValueError`; others surface for developer visibility. | Agreed |
+| Use `resolved.backend` when available in bootstrap | `orphan.backend` from legacy container name is unreliable. Use resolved config backend; warn on mismatch. | Agreed |
+| Use `task.done()` instead of `task.cancelled()` in `_ensure_health_task()` | A completed health poll (success or exception) must be replaceable. `done()` covers both cancelled and normally-finished tasks. | Agreed |
+| Expand `reconcile()` try/except to cover `remove_container()` | `container.remove()` hits the Docker API and can raise. Without wrapping, `reconcile()` could propagate instead of returning `docker_error`. | Agreed |
 
 ---
 

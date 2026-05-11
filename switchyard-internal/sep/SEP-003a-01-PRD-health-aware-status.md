@@ -2,7 +2,7 @@
 
 **Title**: Health-Aware Deployment Status Semantics
 **ID**: SEP-003a-01-PRD-health-aware-status
-**Status**: Draft
+**Status**: Complete
 **Date**: 2026-05-10
 **CONTEXT**: SEP-003a-04-CONTEXT-health-aware-status.md
 
