@@ -377,6 +377,24 @@ class AppSettings(BaseSettings):
     active_host: str | None = None
     docker_host: str | None = None
 
+    proxy_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    proxy_write_timeout_seconds: float = Field(default=30.0, gt=0)
+    proxy_pool_timeout_seconds: float = Field(default=30.0, gt=0)
+    proxy_non_stream_read_timeout_seconds: float = Field(default=600.0, gt=0)
+    proxy_stream_read_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    @field_validator("proxy_stream_read_timeout_seconds", mode="before")
+    @classmethod
+    def _empty_stream_timeout_is_none(cls, value: object) -> object:
+        """Allow an empty env var to mean no streaming read timeout."""
+        if value == "":
+            return None
+        return value
+
+
 class VLLMRuntimeConfig(BaseModel):
     """Typed vLLM runtime configuration.
 
@@ -466,6 +484,5 @@ class VLLMRuntimeConfig(BaseModel):
     # Tier 3+ or any vLLM flag not explicitly modeled above.
     # Passed verbatim to CLI as --flag value pairs.
     extra_args: dict[str, Any] = Field(default_factory=dict)
-
 
 

@@ -9,6 +9,7 @@ Process-local bootstrap settings come from ``.env`` via ``AppSettings``.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -23,6 +24,8 @@ from switchyard.config.models import AppSettings, Config
 from switchyard.core.lifecycle import LifecycleManager
 from switchyard.core.ports import PortAllocator
 from switchyard.logging import RequestContextMiddleware, configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 async def _validation_handler(
@@ -322,8 +325,7 @@ def _register_routes(app: FastAPI) -> None:
             return {"deployment_name": deployment, "status": "stopped"}
         except Exception as exc:
             # Docker/adapter stop failed — preserve state, return error
-            import logging
-            logging.getLogger(__name__).warning(
+            logger.warning(
                 "unload: adapter.stop() failed for %s: %s",
                 deployment, exc, exc_info=True,
             )
@@ -412,7 +414,7 @@ def _register_routes(app: FastAPI) -> None:
         streaming = body.get("stream", False)
 
         if streaming:
-            return _streaming_proxy(
+            return await _streaming_proxy(
                 backend_url + "/v1/chat/completions", backend_body
             )
         return _blocking_proxy(
@@ -461,25 +463,58 @@ def _get_running_deployment(
 
 
 def _backend_url(deployment: Any, config: Config) -> str:
-    """Build the backend URL using configured host and scheme.
+    """Build the backend URL using current configured host reachability.
 
-    Deployment metadata takes precedence (set by adapter at startup).
-    Falls back to the active host's backend_host/backend_scheme.
+    Host reachability is config-owned. Deployment metadata is retained as
+    fallback for older/adopted state, but current config must win so stale
+    in-memory metadata cannot pin proxy traffic to an obsolete hostname.
     """
-    host = deployment.metadata.get("backend_host")
-    scheme = deployment.metadata.get("backend_scheme")
+    host = None
+    scheme = None
+
+    deployment_config = config.deployments.get(deployment.model_name)
+    if deployment_config is not None:
+        host_config = config.hosts.get(deployment_config.host)
+        if host_config is not None:
+            host = host_config.backend_host
+            scheme = host_config.backend_scheme
+
     if host is None or scheme is None:
-        # Fallback to active host configuration
+        host = host or deployment.metadata.get("backend_host")
+        scheme = scheme or deployment.metadata.get("backend_scheme")
+
+    if host is None or scheme is None:
         active_host, active_scheme, _, _ = _resolve_active_host(config)
         host = host or active_host
         scheme = scheme or active_scheme
     return f"{scheme}://{host}:{deployment.port}"
 
 
+def _proxy_non_stream_timeout(settings: AppSettings) -> httpx.Timeout:
+    """Build timeout policy for complete buffered proxy responses."""
+    return httpx.Timeout(
+        connect=settings.proxy_connect_timeout_seconds,
+        read=settings.proxy_non_stream_read_timeout_seconds,
+        write=settings.proxy_write_timeout_seconds,
+        pool=settings.proxy_pool_timeout_seconds,
+    )
+
+
+def _proxy_stream_timeout(settings: AppSettings) -> httpx.Timeout:
+    """Build timeout policy for streaming proxy responses."""
+    return httpx.Timeout(
+        connect=settings.proxy_connect_timeout_seconds,
+        read=settings.proxy_stream_read_timeout_seconds,
+        write=settings.proxy_write_timeout_seconds,
+        pool=settings.proxy_pool_timeout_seconds,
+    )
+
+
 def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
     """Make a blocking proxy request to a backend container."""
+    settings = AppSettings()
     try:
-        with httpx.Client(timeout=10.0) as client:
+        with httpx.Client(timeout=_proxy_non_stream_timeout(settings)) as client:
             response = client.post(url, json=body)
         return JSONResponse(
             status_code=response.status_code,
@@ -497,38 +532,31 @@ def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
         )
 
 
-def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
+async def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     """Stream SSE response from backend to client transparently."""
-    client: httpx.Client | None = None
+    settings = AppSettings()
+    timeout = _proxy_stream_timeout(settings)
+    client: httpx.AsyncClient | None = None
     stream_ctx: Any | None = None
 
     try:
-        client = httpx.Client(timeout=10.0)
+        client = httpx.AsyncClient(timeout=timeout)
         stream_ctx = client.stream("POST", url, json=body)
-        response = stream_ctx.__enter__()
+        response = await stream_ctx.__aenter__()
     except httpx.TimeoutException:
         if client is not None:
-            client.close()
+            await client.aclose()
         return JSONResponse(
             status_code=504,
             content={"detail": "request timeout"},
         )
     except httpx.ConnectError:
         if client is not None:
-            client.close()
+            await client.aclose()
         return JSONResponse(
             status_code=503,
             content={"detail": "backend unavailable"},
         )
-
-    def _generate() -> Any:
-        try:
-            yield from response.iter_bytes()
-        finally:
-            assert stream_ctx is not None
-            assert client is not None
-            stream_ctx.__exit__(None, None, None)
-            client.close()
 
     headers = getattr(response, "headers", {}) or {}
     media_type = (
@@ -536,11 +564,27 @@ def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
         if isinstance(headers, dict)
         else "text/event-stream"
     )
+
+    async def _generate() -> Any:
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        finally:
+            assert stream_ctx is not None
+            assert client is not None
+            await stream_ctx.__aexit__(None, None, None)
+            await client.aclose()
+
+    read_timeout = "none" if timeout.read is None else str(timeout.read)
     return StreamingResponse(
         _generate(),
         status_code=response.status_code,
         media_type=media_type,
-        headers={"Cache-Control": "no-cache"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Switchyard-Proxy-Stream-Read-Timeout": read_timeout,
+        },
     )
 
 
