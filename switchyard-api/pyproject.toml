@@ -33,8 +33,10 @@ dev = [
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+addopts = ["-m", "not live"]
 markers = [
     "no_isolate: skip .env isolation for env override tests",
+    "live: requires live infrastructure (Docker daemon, running Switchyard API); skipped by default; run via `make smoke` or `pytest -m live`",
 ]
 
 [tool.ruff]

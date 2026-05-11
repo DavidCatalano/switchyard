@@ -49,6 +49,9 @@ dev:
 test:
 	cd $(API_DIR) && uv run pytest tests/
 
+smoke:
+	cd $(API_DIR) && uv run pytest -m live tests/
+
 lint:
 	cd $(API_DIR) && uv run ruff check src tests
 
@@ -127,7 +130,8 @@ help:
 	@echo "Development:"
 	@echo "  tunnel                 - Start SSH tunnel to remote Docker ($(SSH_HOST))"
 	@echo "  dev                    - Start FastAPI development server"
-	@echo "  test                   - Run pytest suite"
+	@echo "  test                   - Run pytest suite (live smokes skipped)"
+	@echo "  smoke                  - Run live infrastructure smoke tests (-m live)"
 	@echo "  lint                   - Run ruff linter"
 	@echo "  typecheck              - Run mypy type checking"
 	@echo "  quality                - Run lint + typecheck + tests (full gates)"
@@ -157,7 +161,7 @@ help:
 	@echo "  Terminal 1: make tunnel"
 	@echo "  Terminal 2: make dev"
 
-.PHONY: tunnel dev test lint typecheck quality \
+.PHONY: tunnel dev test smoke lint typecheck quality \
 	api-deployments api-models \
 	load-tinyllama-cpu load-qwen3-27b-fp8 unload-tinyllama-cpu unload-qwen3-27b-fp8 \
 	docker-ps docker-clean stop status help

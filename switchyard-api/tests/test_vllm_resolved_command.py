@@ -1,32 +1,18 @@
-"""Integration tests for the vLLM adapter.
+"""Tests that build vLLM CLI args from a fully resolved deployment.
 
-Smoke tests for end-to-end container lifecycle operations.
-Skipped when Docker is not accessible (CI-safe).
+Exercises the resolver → adapter path: a ``ResolvedDeployment`` is
+constructed, its ``runtime_args`` are validated as ``VLLMRuntimeConfig``,
+and ``VLLMAdapter._build_cli_args`` produces the expected CLI flags.
 
-Validates:
-- Docker ping succeeds
-- Container start/stop lifecycle
-- Health endpoint responses
+Pure unit coverage — no Docker required. Live smoke tests that touch
+the Docker daemon live under ``tests/live/``.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-import pytest
-from docker.errors import APIError, DockerException
-
 from switchyard.config.models import ResolvedDeployment, VLLMRuntimeConfig
-
-
-def _docker_available() -> bool:
-    """Check if Docker daemon is accessible."""
-    try:
-        from docker import from_env
-        client = from_env()
-        return client.ping()
-    except (DockerException, APIError):
-        return False
 
 
 def _make_resolved(
@@ -34,7 +20,7 @@ def _make_resolved(
     deployment_name: str = "integration-test",
     overrides: dict[str, Any] | None = None,
 ) -> ResolvedDeployment:
-    """Create a ResolvedDeployment for integration tests."""
+    """Create a ResolvedDeployment for command-construction tests."""
     defaults: dict[str, Any] = {
         "deployment_name": deployment_name,
         "model_name": "test-model",
@@ -63,22 +49,6 @@ def _make_resolved(
     return ResolvedDeployment(**defaults)
 
 
-@pytest.fixture(scope="module")
-def docker_available():
-    return _docker_available()
-
-
-class TestVLLMDocker:
-    """Integration tests requiring a Docker daemon."""
-
-    @pytest.mark.skipif(not _docker_available(), reason="Docker not available")
-    def test_docker_ping(self) -> None:
-        """Docker daemon is reachable."""
-        from docker import from_env
-        client = from_env()
-        assert client.ping()
-
-
 class TestVLLMResolvedCommand:
     """Tests for resolved deployment command construction."""
 
@@ -94,14 +64,10 @@ class TestVLLMResolvedCommand:
         )
         adapter = VLLMAdapter()
 
-        # Validate runtime_args as typed config, then build CLI args
-        from switchyard.config.models import VLLMRuntimeConfig
-
         runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
         cli_args = adapter._build_cli_args(runtime)
         assert isinstance(cli_args, list)
         assert any("--model" in arg for arg in cli_args)
-
         assert len(cli_args) > 0
 
     def test_cli_args_structure(self) -> None:
