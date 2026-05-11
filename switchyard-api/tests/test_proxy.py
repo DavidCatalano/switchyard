@@ -135,9 +135,9 @@ class TestChatCompletionsProxy:
             "choices": [{"message": {"content": "Hello"}}],
         }
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         info = DeploymentInfo(
@@ -155,7 +155,7 @@ class TestChatCompletionsProxy:
         app.state.manager.state.add(info)
 
         with patch(
-            "switchyard.app.httpx.Client", return_value=mock_client,
+            "switchyard.app.httpx.AsyncClient", return_value=mock_client,
         ) as client_cls:
             client = TestClient(app)
             resp = client.post(
@@ -173,7 +173,7 @@ class TestChatCompletionsProxy:
         assert timeout.pool == 30.0
 
         # Assert forwarded URL and body
-        mock_client.post.assert_called_once()
+        mock_client.post.assert_awaited_once()
         call_args = mock_client.post.call_args
         assert call_args.args[0] == "http://127.0.0.1:9001/v1/chat/completions"
         assert call_args.kwargs["json"] == {
@@ -373,9 +373,9 @@ class TestChatCompletionsProxy:
         from switchyard.core.adapter import DeploymentInfo
 
         mock_client = MagicMock()
-        mock_client.post.side_effect = httpx.ConnectError("refused")
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=httpx.ConnectError("refused"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         info = DeploymentInfo(
@@ -391,13 +391,60 @@ class TestChatCompletionsProxy:
         )
         app.state.manager.state.add(info)
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
                 "/v1/chat/completions",
                 json={"model": "test-deployment", "messages": []},
             )
         assert resp.status_code == 503
+
+    def test_streaming_mid_stream_timeout_ends_cleanly(self) -> None:
+        """Mid-stream httpx.ReadTimeout closes cleanly without ASGI traceback."""
+        from switchyard.core.adapter import DeploymentInfo
+
+        async def _chunks_then_timeout():
+            yield b'data: {"choices": []}\n\n'
+            raise httpx.ReadTimeout("stalled")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.aiter_bytes.return_value = _chunks_then_timeout()
+        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+        mock_response.__aexit__ = AsyncMock(return_value=False)
+        mock_client = MagicMock()
+        mock_client.stream.return_value = mock_response
+        mock_client.aclose = AsyncMock()
+
+        app = create_app()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9001,
+            status="running",
+            container_id="abc123",
+            metadata={
+                "backend_host": "127.0.0.1",
+                "backend_scheme": "http",
+            },
+        )
+        app.state.manager.state.add(info)
+
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
+            client = TestClient(app)
+            resp = client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "test-deployment",
+                    "stream": True,
+                    "messages": [{"role": "user", "content": "Hi"}],
+                },
+            )
+
+        assert resp.status_code == 200
+        assert b"choices" in resp.content
+        mock_response.__aexit__.assert_awaited_once_with(None, None, None)
+        mock_client.aclose.assert_awaited_once()
 
 
 class TestProxyPassthrough:
@@ -437,9 +484,9 @@ class TestProxyPassthrough:
         mock_response.status_code = 200
         mock_response.json.return_value = {"data": [{"id": "text-embedding-3"}]}
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         info = DeploymentInfo(
@@ -455,7 +502,7 @@ class TestProxyPassthrough:
         )
         app.state.manager.state.add(info)
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
                 "/api/proxy/test-deployment/v1/embeddings",
@@ -463,7 +510,7 @@ class TestProxyPassthrough:
             )
 
         # Assert forwarded URL and body (path is literal)
-        mock_client.post.assert_called_once()
+        mock_client.post.assert_awaited_once()
         call_args = mock_client.post.call_args
         assert call_args.args[0] == "http://127.0.0.1:9001/v1/embeddings"
         assert call_args.kwargs["json"] == {"input": "hello"}

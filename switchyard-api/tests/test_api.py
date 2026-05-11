@@ -13,7 +13,7 @@ Validates:
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from starlette.testclient import TestClient
@@ -967,9 +967,9 @@ class TestApiDiagnosticFields:
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"choices": [{"message": {"content": "Hi"}}]}
-        mock_client.post.return_value = mock_response
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         app.state.manager.state.add(
@@ -991,7 +991,7 @@ class TestApiDiagnosticFields:
             ),
         )
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             response = TestClient(app).post(
                 "/v1/chat/completions",
                 json={"model": "test-deployment", "messages": []},
@@ -1197,9 +1197,9 @@ class TestDockerUnreachableRouteMatrix:
         mock_response.json.return_value = {
             "choices": [{"message": {"content": "Hi"}}],
         }
-        mock_client.post.return_value = mock_response
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         app.state.manager.state.add(
@@ -1221,7 +1221,7 @@ class TestDockerUnreachableRouteMatrix:
             ),
         )
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             response = TestClient(app).post(
                 "/v1/chat/completions",
                 json={"model": "test-deployment", "messages": []},

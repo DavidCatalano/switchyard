@@ -8,7 +8,7 @@ Validates:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -108,9 +108,9 @@ class TestProxyErrors:
         from switchyard.core.adapter import DeploymentInfo
 
         mock_client = MagicMock()
-        mock_client.post.side_effect = httpx.TimeoutException("timeout")
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         info = DeploymentInfo(
@@ -126,7 +126,7 @@ class TestProxyErrors:
         )
         app.state.manager.state.add(info)
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
                 "/v1/chat/completions",
@@ -142,9 +142,9 @@ class TestProxyErrors:
         mock_response.status_code = 429
         mock_response.json.return_value = {"error": "rate limited"}
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client.post = AsyncMock(return_value=mock_response)
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
 
         app = create_app()
         info = DeploymentInfo(
@@ -160,7 +160,7 @@ class TestProxyErrors:
         )
         app.state.manager.state.add(info)
 
-        with patch("switchyard.app.httpx.Client", return_value=mock_client):
+        with patch("switchyard.app.httpx.AsyncClient", return_value=mock_client):
             client = TestClient(app)
             resp = client.post(
                 "/api/proxy/test-deployment/v1/models",

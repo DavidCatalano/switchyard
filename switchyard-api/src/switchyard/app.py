@@ -354,7 +354,7 @@ def _register_routes(app: FastAPI) -> None:
         backend_url = _backend_url(dep, config)
         body = await request.json()
 
-        return _blocking_proxy(backend_url + f"/{path}", body)
+        return await _blocking_proxy(backend_url + f"/{path}", body)
 
     # ── /v1/ OpenAI-compatible inference routes ────────────────────
 
@@ -417,7 +417,7 @@ def _register_routes(app: FastAPI) -> None:
             return await _streaming_proxy(
                 backend_url + "/v1/chat/completions", backend_body
             )
-        return _blocking_proxy(
+        return await _blocking_proxy(
             backend_url + "/v1/chat/completions", backend_body
         )
 
@@ -510,12 +510,14 @@ def _proxy_stream_timeout(settings: AppSettings) -> httpx.Timeout:
     )
 
 
-def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
-    """Make a blocking proxy request to a backend container."""
+async def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
+    """Make a proxy request to a backend container (async)."""
     settings = AppSettings()
     try:
-        with httpx.Client(timeout=_proxy_non_stream_timeout(settings)) as client:
-            response = client.post(url, json=body)
+        async with httpx.AsyncClient(
+            timeout=_proxy_non_stream_timeout(settings),
+        ) as client:
+            response = await client.post(url, json=body)
         return JSONResponse(
             status_code=response.status_code,
             content=response.json() if response.status_code != 204 else {},
@@ -569,6 +571,10 @@ async def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
         try:
             async for chunk in response.aiter_bytes():
                 yield chunk
+        except httpx.TimeoutException:
+            logger.warning(
+                "proxy: upstream stream timeout for %s", url, exc_info=True,
+            )
         finally:
             assert stream_ctx is not None
             assert client is not None
