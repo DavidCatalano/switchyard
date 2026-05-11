@@ -112,6 +112,11 @@ class RuntimeConfig(BaseModel):
     container_defaults: RuntimeContainerDefaults = Field(
         default_factory=RuntimeContainerDefaults
     )
+    health_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Seconds to wait for backend health before timing out.",
+    )
 
     _validate_backend = field_validator("backend")(_non_empty_string)
 
@@ -239,6 +244,11 @@ class DeploymentConfig(BaseModel):
     placement: Placement | None = None
     container_overrides: ContainerOverrides | None = None
     extra_args: dict[str, Any] = Field(default_factory=dict)
+    health_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+        description="Seconds to wait for backend health before timing out.",
+    )
 
     _validate_refs = field_validator("model", "runtime", "host")(
         _non_empty_string
@@ -340,6 +350,9 @@ class ResolvedDeployment:
     # Model defaults (portable)
     model_defaults: dict[str, Any] | None
 
+    # Health timeout (resolved cascade: deployment > runtime > default)
+    health_timeout_seconds: float
+
 
 class AppSettings(BaseSettings):
     """Process-local bootstrap settings from .env.
@@ -363,6 +376,24 @@ class AppSettings(BaseSettings):
     api_port: int = 8000
     active_host: str | None = None
     docker_host: str | None = None
+
+    proxy_connect_timeout_seconds: float = Field(default=5.0, gt=0)
+    proxy_write_timeout_seconds: float = Field(default=30.0, gt=0)
+    proxy_pool_timeout_seconds: float = Field(default=30.0, gt=0)
+    proxy_non_stream_read_timeout_seconds: float = Field(default=600.0, gt=0)
+    proxy_stream_read_timeout_seconds: float | None = Field(
+        default=None,
+        gt=0,
+    )
+
+    @field_validator("proxy_stream_read_timeout_seconds", mode="before")
+    @classmethod
+    def _empty_stream_timeout_is_none(cls, value: object) -> object:
+        """Allow an empty env var to mean no streaming read timeout."""
+        if value == "":
+            return None
+        return value
+
 
 class VLLMRuntimeConfig(BaseModel):
     """Typed vLLM runtime configuration.
@@ -453,6 +484,5 @@ class VLLMRuntimeConfig(BaseModel):
     # Tier 3+ or any vLLM flag not explicitly modeled above.
     # Passed verbatim to CLI as --flag value pairs.
     extra_args: dict[str, Any] = Field(default_factory=dict)
-
 
 

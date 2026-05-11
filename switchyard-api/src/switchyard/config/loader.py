@@ -163,6 +163,15 @@ def resolve_deployment(
         else []
     )
 
+    # 8. Resolve health timeout (cascade: deployment > runtime > default)
+    _HEALTH_TIMEOUT_DEFAULT = 300.0  # seconds
+    if deployment.health_timeout_seconds is not None:
+        health_timeout = deployment.health_timeout_seconds
+    elif runtime_cfg.health_timeout_seconds is not None:
+        health_timeout = runtime_cfg.health_timeout_seconds
+    else:
+        health_timeout = _HEALTH_TIMEOUT_DEFAULT
+
     return ResolvedDeployment(
         deployment_name=deployment_name,
         model_name=deployment.model,
@@ -184,6 +193,7 @@ def resolve_deployment(
         container_options=container_options,
         store_mounts=store_mounts,
         model_defaults=model_cfg.defaults,
+        health_timeout_seconds=health_timeout,
     )
 
 
@@ -254,7 +264,28 @@ def _merge_runtime_args(
       2. Runtime defaults
       3. Model runtime_defaults
       4. Deployment runtime_overrides
+
+    Raises:
+        ValueError: If ``health_timeout_seconds`` appears in any
+            runtime-arg layer. It is a first-class Switchyard field,
+            not a runtime flag.
     """
+    _guard_health_timeout(
+        model_cfg.defaults, "model.defaults",
+    )
+    _guard_health_timeout(
+        runtime_cfg.defaults, "runtime.defaults",
+    )
+    _guard_health_timeout(
+        model_cfg.runtime_defaults, "model.runtime_defaults",
+    )
+    _guard_health_timeout(
+        deployment.runtime_overrides, "deployment.runtime_overrides",
+    )
+    _guard_health_timeout(
+        deployment.extra_args, "deployment.extra_args",
+    )
+
     merged: dict[str, Any] = {}
     for layer in (
         model_cfg.defaults or {},
@@ -270,6 +301,24 @@ def _merge_runtime_args(
         merged["extra_args"] = dict(deployment.extra_args)
 
     return merged
+
+
+def _guard_health_timeout(
+    layer: dict[str, Any] | None,
+    source: str,
+) -> None:
+    """Reject health_timeout_seconds in runtime-arg layers.
+
+    This is a first-class Switchyard field (RuntimeConfig/DeploymentConfig),
+    not a runtime flag. Placing it in runtime args would cause it to be
+    passed to vLLM CLI incorrectly.
+    """
+    if layer is not None and "health_timeout_seconds" in layer:
+        raise ValueError(
+            f"health_timeout_seconds is not a runtime argument and cannot "
+            f"be placed in {source}. Use the first-class Switchyard field "
+            f"at deployment or runtime level instead."
+        )
 
 
 def _merge_container_config(

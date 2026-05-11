@@ -9,6 +9,7 @@ Process-local bootstrap settings come from ``.env`` via ``AppSettings``.
 
 from __future__ import annotations
 
+import logging
 import os
 from typing import Any
 
@@ -23,6 +24,8 @@ from switchyard.config.models import AppSettings, Config
 from switchyard.core.lifecycle import LifecycleManager
 from switchyard.core.ports import PortAllocator
 from switchyard.logging import RequestContextMiddleware, configure_logging
+
+logger = logging.getLogger(__name__)
 
 
 async def _validation_handler(
@@ -143,6 +146,15 @@ def _register_routes(app: FastAPI) -> None:
 
     # ── /api/ deployment lifecycle routes ──────────────────────────
 
+    def _derive_health(status: str) -> str:
+        """Derive health string from deployment status."""
+        return {
+            "running": "healthy",
+            "loading": "starting",
+            "error": "unhealthy",
+            "stopped": "unknown",
+        }.get(status, "unknown")
+
     @app.get("/api/deployments")
     async def list_deployments() -> list[dict[str, Any]]:
         """List all configured deployments with current status.
@@ -152,16 +164,12 @@ def _register_routes(app: FastAPI) -> None:
         """
         results: list[dict[str, Any]] = []
         for dep_name, dep_cfg in config.deployments.items():
-            try:
-                resolved = resolve_deployment(config, dep_name)
-                manager.reconcile(dep_name, resolved)
-            except Exception:
-                pass  # Docker unreachable or config broken
+            resolved = resolve_deployment(config, dep_name)
+            result = manager.reconcile(dep_name, resolved)
 
-            try:
-                info = manager.state.get(dep_name)
-                status = info.status
-            except KeyError:
+            if result.info is not None:
+                status = result.info.status
+            else:
                 status = "stopped"
             results.append({
                 "deployment_name": dep_name,
@@ -169,6 +177,8 @@ def _register_routes(app: FastAPI) -> None:
                 "runtime": dep_cfg.runtime,
                 "host": dep_cfg.host,
                 "status": status,
+                "health": _derive_health(status),
+                "container_status": result.container_status,
             })
         return results
 
@@ -186,23 +196,16 @@ def _register_routes(app: FastAPI) -> None:
             )
         dep_cfg = config.deployments[deployment]
 
-        # Reconcile before reporting
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable
+        # Resolve and reconcile
+        resolved = resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
 
-        try:
-            info = manager.state.get(deployment)
-            status = info.status
-        except KeyError:
+        if result.info is not None:
+            status = result.info.status
+        else:
             status = "stopped"
 
-        # Resolve store paths for the detail response
-        resolved = resolve_deployment(config, deployment)
-
-        return {
+        resp: dict[str, Any] = {
             "deployment_name": deployment,
             "model": dep_cfg.model,
             "runtime": dep_cfg.runtime,
@@ -216,7 +219,12 @@ def _register_routes(app: FastAPI) -> None:
             "model_container_path": resolved.model_container_path,
             "runtime_args": _mask_sensitive_args(resolved.runtime_args),
             "status": status,
+            "health": _derive_health(status),
+            "container_status": result.container_status,
         }
+        if result.docker_error is not None:
+            resp["docker_error"] = result.docker_error
+        return resp
 
     @app.get("/api/deployments/{deployment}/status")
     async def get_deployment_status(deployment: str) -> dict[str, Any]:
@@ -227,29 +235,34 @@ def _register_routes(app: FastAPI) -> None:
                 detail=f"deployment {deployment!r} not found in config",
             )
 
-        # Reconcile: adopt running containers, clear stale state
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable or config broken
+        # Resolve and reconcile
+        resolved = resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
 
-        try:
-            info = manager.state.get(deployment)
-            return {
+        if result.info is not None:
+            info = result.info
+            status = info.status
+            resp: dict[str, Any] = {
                 "deployment_name": info.model_name,
-                "status": info.status,
+                "status": status,
+                "health": _derive_health(status),
                 "port": info.port,
                 "container_id": info.container_id,
                 "started_at": info.started_at.isoformat(),
-                "health": "unknown",
+                "container_status": result.container_status,
             }
-        except KeyError:
-            return {
+        else:
+            resp = {
                 "deployment_name": deployment,
                 "status": "stopped",
                 "health": "unknown",
+                "container_status": result.container_status,
             }
+
+        if result.docker_error is not None:
+            resp["docker_error"] = result.docker_error
+
+        return resp
 
     @app.post("/api/deployments/{deployment}/load", status_code=202)
     async def load_deployment(deployment: str) -> dict[str, Any]:
@@ -290,6 +303,9 @@ def _register_routes(app: FastAPI) -> None:
 
         Reconciles with Docker first so that stopped running containers
         after API restart are properly stopped rather than silently ignored.
+
+        If Docker is unreachable during stop, returns 500 and preserves
+        deployment state.
         """
         if deployment not in config.deployments:
             raise HTTPException(
@@ -299,17 +315,24 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile first: if a running container exists after API restart,
         # adopt it into state so it can be stopped
-        try:
-            resolved = resolve_deployment(config, deployment)
-            manager.reconcile(deployment, resolved)
-        except Exception:
-            pass  # Docker unreachable
+        resolved = resolve_deployment(config, deployment)
+        manager.reconcile(deployment, resolved)
 
         try:
             await manager.unload_model(deployment)
         except KeyError:
             # Deployment not in state (already stopped/unloaded)
             return {"deployment_name": deployment, "status": "stopped"}
+        except Exception as exc:
+            # Docker/adapter stop failed — preserve state, return error
+            logger.warning(
+                "unload: adapter.stop() failed for %s: %s",
+                deployment, exc, exc_info=True,
+            )
+            raise HTTPException(
+                status_code=500,
+                detail=f"failed to stop deployment {deployment!r}: {exc}",
+            )
 
         return {"deployment_name": deployment, "status": "stopped"}
 
@@ -324,17 +347,14 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile to adopt running containers, clear stale state
         if deployment in config.deployments:
-            try:
-                resolved = resolve_deployment(config, deployment)
-                manager.reconcile(deployment, resolved)
-            except Exception:
-                pass  # Docker unreachable
+            resolved = resolve_deployment(config, deployment)
+            manager.reconcile(deployment, resolved)
 
         dep = _get_running_deployment(deployment, manager)
         backend_url = _backend_url(dep, config)
         body = await request.json()
 
-        return _blocking_proxy(backend_url + f"/{path}", body)
+        return await _blocking_proxy(backend_url + f"/{path}", body)
 
     # ── /v1/ OpenAI-compatible inference routes ────────────────────
 
@@ -350,11 +370,9 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile all configured deployments
         for dep_name in config.deployments:
-            try:
-                resolved = resolve_deployment(config, dep_name)
-                manager.reconcile(dep_name, resolved)
-            except Exception:
-                pass  # Docker unreachable or config broken
+            resolved = resolve_deployment(config, dep_name)
+            manager.reconcile(dep_name, resolved)
+            # Docker errors are informational — state preserved, don't clear
 
         deployments = manager.state.list_deployments()
         models = [
@@ -382,11 +400,9 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile to adopt running containers, clear stale state
         if deployment_name in config.deployments:
-            try:
-                resolved = resolve_deployment(config, deployment_name)
-                manager.reconcile(deployment_name, resolved)
-            except Exception:
-                pass  # Docker unreachable
+            resolved = resolve_deployment(config, deployment_name)
+            manager.reconcile(deployment_name, resolved)
+            # Docker errors are informational — state preserved, don't clear
 
         deployment = _get_running_deployment(deployment_name, manager)
         backend_url = _backend_url(deployment, config)
@@ -398,10 +414,10 @@ def _register_routes(app: FastAPI) -> None:
         streaming = body.get("stream", False)
 
         if streaming:
-            return _streaming_proxy(
+            return await _streaming_proxy(
                 backend_url + "/v1/chat/completions", backend_body
             )
-        return _blocking_proxy(
+        return await _blocking_proxy(
             backend_url + "/v1/chat/completions", backend_body
         )
 
@@ -447,26 +463,61 @@ def _get_running_deployment(
 
 
 def _backend_url(deployment: Any, config: Config) -> str:
-    """Build the backend URL using configured host and scheme.
+    """Build the backend URL using current configured host reachability.
 
-    Deployment metadata takes precedence (set by adapter at startup).
-    Falls back to the active host's backend_host/backend_scheme.
+    Host reachability is config-owned. Deployment metadata is retained as
+    fallback for older/adopted state, but current config must win so stale
+    in-memory metadata cannot pin proxy traffic to an obsolete hostname.
     """
-    host = deployment.metadata.get("backend_host")
-    scheme = deployment.metadata.get("backend_scheme")
+    host = None
+    scheme = None
+
+    deployment_config = config.deployments.get(deployment.model_name)
+    if deployment_config is not None:
+        host_config = config.hosts.get(deployment_config.host)
+        if host_config is not None:
+            host = host_config.backend_host
+            scheme = host_config.backend_scheme
+
     if host is None or scheme is None:
-        # Fallback to active host configuration
+        host = host or deployment.metadata.get("backend_host")
+        scheme = scheme or deployment.metadata.get("backend_scheme")
+
+    if host is None or scheme is None:
         active_host, active_scheme, _, _ = _resolve_active_host(config)
         host = host or active_host
         scheme = scheme or active_scheme
     return f"{scheme}://{host}:{deployment.port}"
 
 
-def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
-    """Make a blocking proxy request to a backend container."""
+def _proxy_non_stream_timeout(settings: AppSettings) -> httpx.Timeout:
+    """Build timeout policy for complete buffered proxy responses."""
+    return httpx.Timeout(
+        connect=settings.proxy_connect_timeout_seconds,
+        read=settings.proxy_non_stream_read_timeout_seconds,
+        write=settings.proxy_write_timeout_seconds,
+        pool=settings.proxy_pool_timeout_seconds,
+    )
+
+
+def _proxy_stream_timeout(settings: AppSettings) -> httpx.Timeout:
+    """Build timeout policy for streaming proxy responses."""
+    return httpx.Timeout(
+        connect=settings.proxy_connect_timeout_seconds,
+        read=settings.proxy_stream_read_timeout_seconds,
+        write=settings.proxy_write_timeout_seconds,
+        pool=settings.proxy_pool_timeout_seconds,
+    )
+
+
+async def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
+    """Make a proxy request to a backend container (async)."""
+    settings = AppSettings()
     try:
-        with httpx.Client(timeout=10.0) as client:
-            response = client.post(url, json=body)
+        async with httpx.AsyncClient(
+            timeout=_proxy_non_stream_timeout(settings),
+        ) as client:
+            response = await client.post(url, json=body)
         return JSONResponse(
             status_code=response.status_code,
             content=response.json() if response.status_code != 204 else {},
@@ -483,38 +534,31 @@ def _blocking_proxy(url: str, body: dict[str, Any]) -> JSONResponse:
         )
 
 
-def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
+async def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     """Stream SSE response from backend to client transparently."""
-    client: httpx.Client | None = None
+    settings = AppSettings()
+    timeout = _proxy_stream_timeout(settings)
+    client: httpx.AsyncClient | None = None
     stream_ctx: Any | None = None
 
     try:
-        client = httpx.Client(timeout=10.0)
+        client = httpx.AsyncClient(timeout=timeout)
         stream_ctx = client.stream("POST", url, json=body)
-        response = stream_ctx.__enter__()
+        response = await stream_ctx.__aenter__()
     except httpx.TimeoutException:
         if client is not None:
-            client.close()
+            await client.aclose()
         return JSONResponse(
             status_code=504,
             content={"detail": "request timeout"},
         )
     except httpx.ConnectError:
         if client is not None:
-            client.close()
+            await client.aclose()
         return JSONResponse(
             status_code=503,
             content={"detail": "backend unavailable"},
         )
-
-    def _generate() -> Any:
-        try:
-            yield from response.iter_bytes()
-        finally:
-            assert stream_ctx is not None
-            assert client is not None
-            stream_ctx.__exit__(None, None, None)
-            client.close()
 
     headers = getattr(response, "headers", {}) or {}
     media_type = (
@@ -522,11 +566,31 @@ def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
         if isinstance(headers, dict)
         else "text/event-stream"
     )
+
+    async def _generate() -> Any:
+        try:
+            async for chunk in response.aiter_bytes():
+                yield chunk
+        except httpx.TimeoutException:
+            logger.warning(
+                "proxy: upstream stream timeout for %s", url, exc_info=True,
+            )
+        finally:
+            assert stream_ctx is not None
+            assert client is not None
+            await stream_ctx.__aexit__(None, None, None)
+            await client.aclose()
+
+    read_timeout = "none" if timeout.read is None else str(timeout.read)
     return StreamingResponse(
         _generate(),
         status_code=response.status_code,
         media_type=media_type,
-        headers={"Cache-Control": "no-cache"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Switchyard-Proxy-Stream-Read-Timeout": read_timeout,
+        },
     )
 
 

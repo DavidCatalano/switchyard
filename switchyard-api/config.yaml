@@ -1,6 +1,6 @@
 hosts:
   trainbox:
-    backend_host: trainbox
+    backend_host: 10.0.0.10
     docker_host: tcp://127.0.0.1:2375
     docker_network: ai_net
     port_range: [18000, 18100]
@@ -74,9 +74,9 @@ deployments:
     host: trainbox
     runtime_overrides:
       max_model_len: 100000
-      max_num_seqs: 4
+      max_num_seqs: 2
       tensor_parallel_size: 2
-      gpu_memory_utilization: 0.97
+      gpu_memory_utilization: 0.30
       kv_cache_dtype: fp8_e4m3
       enable_auto_tool_choice: true
       disable_custom_all_reduce: true

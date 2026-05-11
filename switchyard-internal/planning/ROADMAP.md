@@ -70,29 +70,33 @@ Complete. Introduced the entity config model with `hosts`, `runtimes`,
 resolved deployment wiring; and verified the TinyLlama CPU smoke flow through
 the OpenAI-compatible API surface.
 
-
-## Planned Work
-
 ### SEP-003 — Deployment Resolution and Lifecycle
 
 GitHub issue: #3
 
-Finish the deployment lifecycle migration that SEP-002 largely enabled. The
+Complete. Finish the deployment lifecycle migration that SEP-002 largely enabled. The
 resolver already produces adapter-ready deployments, resolves source/store
 paths, merges runtime/model/deployment cascades, and translates placement into
 container launch behavior. SEP-003 should focus on the remaining lifecycle and
 API work:
 
 - Replace body-based lifecycle routes with deployment-resource routes:
-  `POST /deployments/{deployment}/load`,
-  `POST /deployments/{deployment}/unload`, and
-  `GET /deployments/{deployment}/status`.
-- Improve deployment status detail where needed.
 - Reconcile in-memory deployment state with actual Docker container state before
   rejecting loads or reporting status.
-- Clear stale state and release allocated ports when a managed container is
-  removed outside the API.
-- Keep smoke tests aligned on deployment IDs.
+
+### SEP-003a — Health-Aware Deployment Status
+
+GitHub issue: #3
+
+In final review. Corrects the invariant that Switchyard `running` means
+backend health has succeeded. Reconciliation adopts Docker-running
+containers as `loading` with background health polling. `ReconcileResult`
+carries `container_status` and `docker_error` for diagnostic visibility.
+Health timeout is configurable via first-class `health_timeout_seconds`
+with cascade resolution.
+
+
+## Planned Work
 
 ### SEP-004 — Runtime Resolver Hardening
 

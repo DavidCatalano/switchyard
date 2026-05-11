@@ -55,6 +55,11 @@ class TestAppSettingsDefaults:
             assert settings.api_port == 8000
             assert settings.active_host is None
             assert settings.docker_host is None
+            assert settings.proxy_connect_timeout_seconds == 5.0
+            assert settings.proxy_write_timeout_seconds == 30.0
+            assert settings.proxy_pool_timeout_seconds == 30.0
+            assert settings.proxy_non_stream_read_timeout_seconds == 600.0
+            assert settings.proxy_stream_read_timeout_seconds is None
         finally:
             _restore_switchyard_env(saved)
 
@@ -108,6 +113,11 @@ class TestAppSettingsValidKeys:
             "SWITCHYARD_API_PORT=9000\n"
             "SWITCHYARD_ACTIVE_HOST=myhost\n"
             "SWITCHYARD_DOCKER_HOST=tcp://127.0.0.1:2375\n"
+            "SWITCHYARD_PROXY_CONNECT_TIMEOUT_SECONDS=6\n"
+            "SWITCHYARD_PROXY_WRITE_TIMEOUT_SECONDS=31\n"
+            "SWITCHYARD_PROXY_POOL_TIMEOUT_SECONDS=32\n"
+            "SWITCHYARD_PROXY_NON_STREAM_READ_TIMEOUT_SECONDS=601\n"
+            "SWITCHYARD_PROXY_STREAM_READ_TIMEOUT_SECONDS=120\n"
         )
         saved = _clear_switchyard_env()
         try:
@@ -118,25 +128,59 @@ class TestAppSettingsValidKeys:
             assert settings.api_port == 9000
             assert settings.active_host == "myhost"
             assert settings.docker_host == "tcp://127.0.0.1:2375"
+            assert settings.proxy_connect_timeout_seconds == 6.0
+            assert settings.proxy_write_timeout_seconds == 31.0
+            assert settings.proxy_pool_timeout_seconds == 32.0
+            assert settings.proxy_non_stream_read_timeout_seconds == 601.0
+            assert settings.proxy_stream_read_timeout_seconds == 120.0
+        finally:
+            _restore_switchyard_env(saved)
+
+    def test_empty_stream_read_timeout_disables_read_timeout(
+        self, tmp_path: pathlib.Path,
+    ) -> None:
+        """An empty stream read timeout env value resolves to None."""
+        env_file = tmp_path / ".env"
+        env_file.write_text("SWITCHYARD_PROXY_STREAM_READ_TIMEOUT_SECONDS=\n")
+        saved = _clear_switchyard_env()
+        try:
+            settings = _load_settings(env_file)
+            assert settings.proxy_stream_read_timeout_seconds is None
+        finally:
+            _restore_switchyard_env(saved)
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "SWITCHYARD_PROXY_CONNECT_TIMEOUT_SECONDS",
+            "SWITCHYARD_PROXY_WRITE_TIMEOUT_SECONDS",
+            "SWITCHYARD_PROXY_POOL_TIMEOUT_SECONDS",
+            "SWITCHYARD_PROXY_NON_STREAM_READ_TIMEOUT_SECONDS",
+            "SWITCHYARD_PROXY_STREAM_READ_TIMEOUT_SECONDS",
+        ],
+    )
+    def test_timeout_values_must_be_positive(
+        self, tmp_path: pathlib.Path, key: str,
+    ) -> None:
+        """Proxy timeout values reject zero or negative values."""
+        env_file = tmp_path / ".env"
+        env_file.write_text(f"{key}=0\n")
+        saved = _clear_switchyard_env()
+        try:
+            with pytest.raises(ValidationError):
+                _load_settings(env_file)
         finally:
             _restore_switchyard_env(saved)
 
 
 class TestAppSettingsEnvExampleMatches:
-    """Keys in .env.example must match AppSettings fields exactly."""
+    """Keys in .env.example must be valid AppSettings fields."""
 
     def test_env_example_keys_match_settings(self) -> None:
-        """Every SWITCHYARD_* key in .env.example maps to an AppSettings field."""
+        """.env.example may omit internal keys but must not document typos."""
         project_root = pathlib.Path(__file__).resolve().parent.parent
         env_example = project_root / ".env.example"
-        settings_fields = {
-            "config_path",
-            "log_level",
-            "api_host",
-            "api_port",
-            "active_host",
-            "docker_host",
-        }
+        settings_fields = set(AppSettings.model_fields)
 
         env_keys: set[str] = set()
         for line in env_example.read_text().splitlines():
@@ -152,6 +196,3 @@ class TestAppSettingsEnvExampleMatches:
 
         extra_keys = env_keys - settings_fields
         assert not extra_keys, f"Extra keys: {extra_keys}"
-
-        missing_keys = settings_fields - env_keys
-        assert not missing_keys, f"Missing keys: {missing_keys}"

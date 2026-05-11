@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import docker
@@ -28,6 +30,30 @@ from switchyard.core.orphan import OrphanDetector, _DockerClient
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
 from switchyard.core.state import DeploymentStateManager
+
+
+@dataclass
+class ReconcileResult:
+    """Structured result from reconcile().
+
+    Attributes:
+        info: DeploymentInfo if state exists (adopted or preserved),
+              None if container was missing/exited/dead.
+        container_status: Docker container observation. Use raw Docker
+              status strings when available (e.g. "running", "exited",
+              "dead", "created", "paused", "restarting"). Use
+              Switchyard-added "missing" when no managed container exists
+              and "unknown" when Docker is unreachable.
+        docker_error: Error message if Docker was unreachable or an
+              unrecoverable container-level issue was found,
+              None otherwise.
+    """
+
+    info: DeploymentInfo | None = None
+    container_status: str = "unknown"
+    docker_error: str | None = None
+    _adopted: bool = field(default=False, repr=False)  # internal flag
+    _health_task_started: bool = field(default=False, repr=False)  # internal flag
 
 if TYPE_CHECKING:
     from switchyard.core.docker import _DockerContainer
@@ -84,55 +110,68 @@ class LifecycleManager:
 
     def reconcile(
         self, deployment_name: str, resolved: ResolvedDeployment,
-    ) -> DeploymentInfo | None:
+    ) -> ReconcileResult:
         """Reconcile in-memory state with actual Docker container state.
 
         Looks up the Docker container by Switchyard labels and corrects
         in-memory state to match reality.
 
-        Four outcomes:
-        1. Container running and already in memory → preserve state, update
-           to running if needed, return DeploymentInfo.
-        2. Container running and missing from memory → adopt it, reserve
-           port, return DeploymentInfo.
-        3. Container exited/dead → clear in-memory state, release port,
-           cancel health task, remove container, return None.
-        4. Container gone → clear in-memory state, release port, cancel
-           health task, return None.
-
-        Args:
-            deployment_name: Logical deployment identifier.
-            resolved: Fully resolved deployment configuration.
-
         Returns:
-            ``DeploymentInfo`` if the deployment is running, ``None``
-            otherwise.
+            ``ReconcileResult`` with ``info``, ``container_status``, and
+            ``docker_error`` (when Docker is unreachable).
         """
-        # No factory configured → skip reconciliation
+        # No factory configured → return in-memory state as-is
         if self._docker_client_factory is None:
-            # If we have in-memory state, return it as-is
             try:
-                return self.state.get(deployment_name)
+                return ReconcileResult(
+                    info=self.state.get(deployment_name),
+                    container_status="unknown",
+                )
             except KeyError:
-                return None
+                return ReconcileResult(
+                    info=None, container_status="unknown"
+                )
 
-        client = self._docker_client_factory(resolved.docker_host)
-        container = self._find_container(client, deployment_name)
+        # Wrap all Docker calls; catch Docker SDK exceptions only
+        try:
+            client = self._docker_client_factory(resolved.docker_host)
+            container = self._find_container(client, deployment_name)
 
-        if container is None:
-            # Container gone → clear any stale state
+            if container is None:
+                # Container gone → clear any stale state
+                self._clear_deployment(deployment_name)
+                return ReconcileResult(
+                    info=None, container_status="missing"
+                )
+
+            status = self._get_container_status(container)
+
+            if status == "running":
+                return self._handle_running(
+                    deployment_name, container, resolved
+                )
+
+            # exited, dead, or other non-running state → clear + remove
+            remove_container(container)
             self._clear_deployment(deployment_name)
-            return None
-
-        status = self._get_container_status(container)
-
-        if status == "running":
-            return self._handle_running(deployment_name, container, resolved)
-
-        # exited, dead, or other non-running state → clear + remove
-        remove_container(container)
-        self._clear_deployment(deployment_name)
-        return None
+            return ReconcileResult(
+                info=None, container_status=status
+            )
+        except docker.errors.DockerException as exc:
+            logger.warning(
+                "reconcile: Docker operation failed for %s: %s",
+                deployment_name, exc, exc_info=True,
+            )
+            # Preserve in-memory state, report diagnostic
+            try:
+                info = self.state.get(deployment_name)
+            except KeyError:
+                info = None
+            return ReconcileResult(
+                info=info,
+                container_status="unknown",
+                docker_error="docker operation failed during reconciliation",
+            )
 
     def _find_container(
         self, client: docker.DockerClient, deployment_name: str,
@@ -149,28 +188,53 @@ class LifecycleManager:
         deployment_name: str,
         container: _DockerContainer,
         resolved: ResolvedDeployment,
-    ) -> DeploymentInfo | None:
-        """Handle a running container found during reconciliation."""
+    ) -> ReconcileResult:
+        """Handle a running container found during reconciliation.
+
+        Preserves existing in-memory status for ``loading``, ``running``,
+        and ``error``. Treats ``stopped`` as stale (re-adopt as ``loading``).
+        Adopts missing containers as ``loading`` with health polling.
+        """
         existing = self.state._deployments.get(deployment_name)
 
-        if existing is not None:
-            # Already in memory — ensure status is running
-            if existing.status != "running":
-                self.state.update_status(deployment_name, "running")
-            return self.state.get(deployment_name)
+        if existing is not None and existing.status in (
+            "loading", "running", "error"
+        ):
+            # Preserve existing state — Docker running alone is not enough
+            # to coerce a health-determined status.
+            if existing.status == "loading":
+                # Ensure a health task exists (may have been missed by
+                # sync reconcile that had no event loop).
+                self._ensure_health_task(deployment_name, existing)
+            # "running" and "error" — do nothing. Error is terminal.
+            return ReconcileResult(
+                info=existing, container_status="running"
+            )
 
-        # Running container not in memory → adopt it
+        # Either no existing state or existing state is "stopped" (stale).
+        # Clear stale state before adopting.
+        if existing is not None:
+            self._clear_deployment(deployment_name)
+
+        # Either no existing state or existing state is "stopped" (stale).
+        # Adopt the container as "loading".
         internal_port = resolved.internal_port
         port = get_container_host_port(container, internal_port)
         if port is None:
             # Can't determine host port — can't safely adopt.
-            # Container is running but we can't route to it.
             logger.warning(
                 "reconcile: running container for %s has no bound host "
                 "port (internal=%d) — skipping adoption",
                 deployment_name, internal_port,
             )
-            return None
+            return ReconcileResult(
+                info=None,
+                container_status="running",
+                docker_error=(
+                    "managed container is running but has no host port "
+                    "binding"
+                ),
+            )
 
         # Reserve the observed port
         try:
@@ -182,17 +246,21 @@ class LifecycleManager:
             model_name=deployment_name,
             backend=resolved.backend,
             port=port,
-            status="running",
+            status="loading",
             container_id=container.short_id,
             metadata=self._build_adopted_metadata(resolved),
         )
         self.state.add(info)
+
+        # Start health polling for the newly adopted container
+        self._ensure_health_task(deployment_name, info)
+
         logger.info(
-            "reconcile: adopted running container for %s "
+            "reconcile: adopted running container for %s as loading "
             "(port=%d container=%s)",
             deployment_name, port, container.short_id,
         )
-        return info
+        return ReconcileResult(info=info, container_status="running")
 
     def _build_adopted_metadata(
         self, resolved: ResolvedDeployment,
@@ -209,9 +277,45 @@ class LifecycleManager:
         metadata: dict[str, Any] = dict(resolved.runtime_args)
         metadata["backend_host"] = resolved.backend_host
         metadata["backend_scheme"] = resolved.backend_scheme
+        # health_timeout_seconds is a first-class resolved value; set it
+        # after copying runtime_args so it always wins over any leaked value
+        if hasattr(resolved, "health_timeout_seconds"):
+            metadata["health_timeout_seconds"] = resolved.health_timeout_seconds
         # served_model_name from runtime_args is authoritative; overrides
         # take precedence over raw model_defaults
         return metadata
+
+    def _ensure_health_task(
+        self, deployment_name: str, info: DeploymentInfo,
+    ) -> None:
+        """Start a health poll task if one doesn't already exist.
+
+        Safe to call from sync context: if no event loop is running,
+        logs a warning and returns without creating a task.
+        """
+        # Check for existing non-cancelled (and not completed) task
+        existing_task = self._health_tasks.get(deployment_name)
+        if existing_task is not None and not existing_task.done():
+            return  # task still active
+
+        # Try to get a running event loop
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # No event loop running (e.g. sync test context).
+            # Health poll will resume on the next async reconcile call.
+            logger.warning(
+                "_ensure_health_task: no event loop for %s; "
+                "health task will start on next async reconcile",
+                deployment_name,
+            )
+            return
+
+        task = loop.create_task(
+            self._health_poll(deployment_name, info),
+            name=f"health-{deployment_name}",
+        )
+        self._health_tasks[deployment_name] = task
 
     def _clear_deployment(self, deployment_name: str) -> None:
         """Clear in-memory state, release port, cancel health task."""
@@ -274,18 +378,36 @@ class LifecycleManager:
             ``DeploymentInfo`` with ``status="loading"``.
 
         Raises:
-            ValueError: If the deployment is already loaded.
+            ValueError: If the deployment is already loaded or in error.
+            RuntimeError: If Docker is unreachable (fail fast).
             KeyError: If the backend is not registered.
         """
         # Reconcile first: clear stale state or adopt running container
-        # Only block on "already running" if we actually found a Docker container
-        reconciled = self.reconcile(deployment_name, resolved)
-        if reconciled is not None and self._docker_client_factory is not None:
-            # Container already running (adopted or preserved)
-            raise ValueError(
-                f"deployment {deployment_name!r} is already running "
-                f"(container {reconciled.container_id})"
+        result = self.reconcile(deployment_name, resolved)
+
+        # Docker unreachable → fail fast (can't safely start)
+        if result.docker_error is not None:
+            raise RuntimeError(
+                f"failed to reconcile Docker state before load: "
+                f"{result.docker_error}"
             )
+
+        if result.info is not None:
+            if result.info.status == "running":
+                raise ValueError(
+                    f"deployment {deployment_name!r} is already running "
+                    f"(container {result.info.container_id})"
+                )
+            if result.info.status == "loading":
+                raise ValueError(
+                    f"deployment {deployment_name!r} is already starting, "
+                    f"not yet ready"
+                )
+            if result.info.status == "error":
+                raise ValueError(
+                    f"deployment {deployment_name!r} is in error state, "
+                    f"unload first"
+                )
 
         # Check for duplicates in state (should be cleared by reconcile,
         # but defensive check remains)
@@ -313,6 +435,17 @@ class LifecycleManager:
             self.port_allocator.release(port)
             raise
 
+        # Build metadata: start from adapter-provided values (e.g. served_model_name)
+        # then overlay first-class Switchyard metadata.
+        metadata: dict[str, Any] = dict(deployment.metadata)
+        metadata.update(resolved.runtime_args)
+        metadata["backend_host"] = resolved.backend_host
+        metadata["backend_scheme"] = resolved.backend_scheme
+        # health_timeout_seconds is set on ResolvedDeployment and must not
+        # leak into runtime_args; set it explicitly in metadata
+        if hasattr(resolved, "health_timeout_seconds"):
+            metadata["health_timeout_seconds"] = resolved.health_timeout_seconds
+
         # Record in state as "loading"
         loading_info = DeploymentInfo(
             model_name=deployment_name,
@@ -321,16 +454,12 @@ class LifecycleManager:
             status="loading",
             container_id=deployment.container_id,
             started_at=deployment.started_at,
-            metadata=dict(deployment.metadata),
+            metadata=metadata,
         )
         self.state.add(loading_info)
 
-        # Spawn background health checker
-        task = asyncio.create_task(
-            self._health_poll(deployment_name, deployment),
-            name=f"health-{deployment_name}",
-        )
-        self._health_tasks[deployment_name] = task
+        # Spawn background health checker via idempotent helper
+        self._ensure_health_task(deployment_name, loading_info)
 
         logger.info(
             "deployment %s loading (backend=%s port=%d container=%s)",
@@ -367,7 +496,11 @@ class LifecycleManager:
                 del self._health_tasks[deployment_name]
             return  # idempotent: already unloaded
 
-        # Cancel health poll
+        # Stop via adapter first — health task cancellation follows success
+        adapter = self._get_adapter(deployment.backend)
+        adapter.stop(deployment)
+
+        # Cancel health poll (after stop succeeds)
         if deployment_name in self._health_tasks:
             self._health_tasks[deployment_name].cancel()
             try:
@@ -375,10 +508,6 @@ class LifecycleManager:
             except asyncio.CancelledError:
                 pass
             del self._health_tasks[deployment_name]
-
-        # Stop via adapter
-        adapter = self._get_adapter(deployment.backend)
-        adapter.stop(deployment)
 
         # Release port
         self.port_allocator.release(deployment.port)
@@ -421,6 +550,11 @@ class LifecycleManager:
         """
         adapter = self._get_adapter(initial.backend)
         poll_info = initial  # current snapshot
+        # Per-deployment timeout from metadata (set by load_model or
+        # reconciliation adoption), falling back to manager default.
+        timeout = poll_info.metadata.get(
+            "health_timeout_seconds", self._health_timeout
+        )
         start_time = asyncio.get_event_loop().time()
 
         while True:
@@ -428,7 +562,7 @@ class LifecycleManager:
 
             # Check startup timeout
             elapsed = asyncio.get_event_loop().time() - start_time
-            timed_out = elapsed >= self._health_timeout
+            timed_out = elapsed >= timeout
 
             try:
                 health_status = adapter.health(poll_info)
@@ -467,7 +601,11 @@ class LifecycleManager:
                 break
 
     async def bootstrap(
-        self, config: Config, docker_client: _DockerClient,
+        self,
+        config: Config,
+        docker_client: _DockerClient,
+        *,
+        resolve: Callable[[str], ResolvedDeployment] | None = None,
     ) -> None:
         """Run the startup bootstrap sequence.
 
@@ -475,9 +613,19 @@ class LifecycleManager:
         2. Run orphan detection (adopt running, remove crashed)
         3. Auto-start models with ``auto_start=True``
 
+        Orphan normalization: each running orphan from `OrphanDetector`
+        is normalized to ``DeploymentInfo(status="loading")`` with
+        metadata populated from the resolved deployment config.
+        Orphans whose config lookup fails are skipped with a warning.
+
         Args:
             config: Application configuration.
             docker_client: Docker SDK client instance.
+            resolve: Optional resolver callable mapping deployment
+                name to ``ResolvedDeployment``. A resolver must be
+                provided for orphan adoption; without it, orphans are
+                skipped with a warning (incomplete adoption is risky
+                for future startup wiring).
 
         Raises:
             ConnectionError: If Docker daemon is not accessible.
@@ -491,12 +639,72 @@ class LifecycleManager:
         results = detector.scan()
 
         for orphan in results.adopted:
+            # Note: orphan.model_name carries the deployment name
+            # (naming artifact of OrphanDetector)
+            deployment_name = orphan.model_name
+
+            # Require a resolver for proper metadata/health polling
+            if resolve is None:
+                logger.warning(
+                    "bootstrap: skipping orphan %s — no resolver provided; "
+                    "cannot populate metadata or health timeout",
+                    deployment_name,
+                )
+                continue
+
+            # Try to resolve deployment config for metadata
+            resolved = None
+            try:
+                resolved = resolve(deployment_name)
+            except (KeyError, ValueError) as exc:
+                logger.warning(
+                    "bootstrap: skipping orphan %s — "
+                    "config lookup failed (deployment may have been "
+                    "renamed or removed): %s",
+                    deployment_name, exc,
+                )
+                continue
+
+            # Build metadata from resolved config if available
+            metadata: dict[str, Any] = {}
+            # Use resolved.backend when available; warn on mismatch.
+            # orphan.backend comes from a legacy container name pattern,
+            # not from resolved config.
+            backend = orphan.backend
+            if resolved is not None:
+                metadata = self._build_adopted_metadata(resolved)
+                if orphan.backend != resolved.backend:
+                    logger.warning(
+                        "bootstrap: orphan %s has backend %r from container "
+                        "name but config says %r; using resolved config",
+                        deployment_name, orphan.backend, resolved.backend,
+                    )
+                backend = resolved.backend
+
+            # Normalize to loading with resolved port/metadata
+            orphan_loading = DeploymentInfo(
+                model_name=deployment_name,
+                backend=backend,
+                port=orphan.port,
+                status="loading",
+                container_id=orphan.container_id,
+                metadata=metadata,
+            )
+
             # Allocate the orphan's port so allocator knows it's taken
-            self.port_allocator.allocate(port=orphan.port)
-            self.state.add(orphan)
+            try:
+                self.port_allocator.allocate(port=orphan.port)
+            except ValueError:
+                pass  # already allocated
+
+            self.state.add(orphan_loading)
+
+            # Start health polling for the adopted orphan
+            self._ensure_health_task(deployment_name, orphan_loading)
+
             logger.info(
-                "bootstrap: adopted orphan %s (port=%d)",
-                orphan.model_name, orphan.port,
+                "bootstrap: adopted orphan %s as loading (port=%d)",
+                deployment_name, orphan.port,
             )
 
         for name in results.removed:

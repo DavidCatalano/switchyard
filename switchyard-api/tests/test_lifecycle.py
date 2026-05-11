@@ -17,12 +17,13 @@ import asyncio
 from typing import Any
 from unittest.mock import MagicMock
 
+import docker
 import pytest
 import pytest_asyncio
 
 from switchyard.config.models import ResolvedDeployment
 from switchyard.core.adapter import BackendAdapter, DeploymentInfo
-from switchyard.core.lifecycle import LifecycleManager
+from switchyard.core.lifecycle import LifecycleManager, ReconcileResult
 from switchyard.core.ports import PortAllocator
 from switchyard.core.registry import AdapterRegistry
 
@@ -54,6 +55,7 @@ def _make_resolved(
         "container_options": {},
         "store_mounts": {},
         "model_defaults": None,
+        "health_timeout_seconds": 300.0,
     }
     if overrides:
         defaults.update(overrides)
@@ -157,7 +159,7 @@ class TestLoadModel:
     ) -> None:
         resolved = _make_resolved()
         await manager.load_model("test-deployment", resolved)
-        with pytest.raises(ValueError, match="already deployed"):
+        with pytest.raises(ValueError, match="already starting"):
             await manager.load_model("test-deployment", resolved)
 
     async def test_load_unknown_backend_raises(
@@ -209,6 +211,53 @@ class TestLoadModel:
         with pytest.raises(KeyError):
             failing_mgr.state.get("failing-deployment")
 
+    async def test_load_preserves_adapter_served_model_name(self) -> None:
+        """Adapter metadata survives load_model normalization."""
+
+        class MetadataAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:
+                pass
+
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name=resolved.deployment_name,
+                    backend=resolved.backend,
+                    port=port,
+                    status="loading",
+                    container_id="metadata-123",
+                    metadata={
+                        "served_model_name": "adapter-served-model",
+                    },
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None:
+                pass
+
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "running"
+
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("metadata", MetadataAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9700),
+        )
+        resolved = _make_resolved(
+            backend="metadata",
+            overrides={"runtime_args": {"model": "/models/test"}},
+        )
+
+        info = await manager.load_model("test-deployment", resolved)
+
+        assert info.metadata["served_model_name"] == "adapter-served-model"
+        assert info.metadata["model"] == "/models/test"
+        assert info.metadata["backend_host"] == "localhost"
+
 
 class TestHealthCheck:
     """Background health check tests."""
@@ -233,7 +282,9 @@ class TestHealthCheck:
         manager._get_adapter("mock")
         adapter = manager._adapters["mock"]
         adapter._healthy = False  # type: ignore[attr-defined]
-        resolved = _make_resolved()
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.05},
+        )
         info = await manager.load_model("test-deployment", resolved)
         assert info.status == "loading"
         await manager._wait_for_status("test-deployment", "error", timeout=5.0)
@@ -250,7 +301,9 @@ class TestHealthCheck:
         adapter = manager._adapters["mock"]
         adapter._healthy = False  # type: ignore[attr-defined]
 
-        resolved = _make_resolved()
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.05},
+        )
         info = await manager.load_model("test-deployment", resolved)
         assert info.status == "loading"
 
@@ -299,6 +352,48 @@ class TestUnloadModel:
     ) -> None:
         """Unload unknown deployment is idempotent (no error)."""
         await manager.unload_model("nonexistent")  # no exception
+
+    async def test_unload_stop_failure_preserves_state_and_health_task(
+        self,
+    ) -> None:
+        """Stop failure preserves state and health task on loading deployment."""
+        class FailingAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None:
+                raise docker.errors.DockerException("connection refused")
+            def health(self, deployment: DeploymentInfo) -> str:
+                return "error"
+            def endpoint(self, deployment: DeploymentInfo) -> str:
+                return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", FailingAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+        )
+        resolved = _make_resolved()
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        original_task = manager._health_tasks["test-deployment"]
+
+        # Unload should fail, state and health task preserved
+        with pytest.raises(docker.errors.DockerException):
+            await manager.unload_model("test-deployment")
+
+        # Deployment state preserved
+        stored = manager.state.get("test-deployment")
+        assert stored.status == "loading"
+        # Health task preserved (not cancelled)
+        assert "test-deployment" in manager._health_tasks
+        assert manager._health_tasks["test-deployment"] is original_task
 
 
 class TestStatus:
@@ -355,7 +450,7 @@ def _make_factory(
 
     The factory is a callable that returns a DockerClient mock.
     The DockerClient's containers.list() returns containers matching
-    the label filter.
+    the label filter (simulating find_container_by_labels behavior).
     """
     client = MagicMock()
     factory = MagicMock(return_value=client)
@@ -364,6 +459,15 @@ def _make_factory(
     def _list(all: bool = False, filters: dict | None = None) -> list:
         if container is None:
             return []
+        # Simulate label-based filtering: only return the container
+        # if its labels match the filter criteria
+        if filters and "label" in filters:
+            label_set = set(filters["label"])
+            container_labels = set(
+                f"{k}={v}" for k, v in container.labels.items()
+            )
+            if not label_set.issubset(container_labels):
+                return []
         return [container]
 
     client.containers.list = _list
@@ -398,18 +502,20 @@ class TestReconcile:
         manager.state.add(info)
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
-        assert result is not None
-        assert result.status == "running"
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "unknown"
 
     def test_reconcile_no_factory_returns_none_when_absent(self) -> None:
         """Without a Docker factory, reconcile returns None for missing state."""
         manager = self._make_manager()
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "unknown"
 
     def test_reconcile_running_container_preserves_state(self) -> None:
-        """Running container found → preserve and return existing state."""
+        """Running container found → preserve existing state (no coercion)."""
         container = _make_mock_container(status="running")
         factory = _make_factory(container)
         manager = self._make_manager(factory)
@@ -427,11 +533,12 @@ class TestReconcile:
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is not None
-        assert result.status == "running"  # updated from loading
+        assert result.info is not None
+        assert result.info.status == "loading"  # preserved, not coerced to running
+        assert result.container_status == "running"
 
     def test_reconcile_running_container_adopts_when_missing(self) -> None:
-        """Running container not in memory → adopt and reserve port."""
+        """Running container not in memory → adopt as loading and reserve port."""
         container = _make_mock_container(status="running", host_port=9510)
         factory = _make_factory(container)
         manager = self._make_manager(factory)
@@ -439,9 +546,10 @@ class TestReconcile:
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is not None
-        assert result.status == "running"
-        assert result.port == 9510
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert result.info.port == 9510
+        assert result.container_status == "running"
         assert 9510 in manager.port_allocator.allocated
 
     def test_reconcile_exited_container_clears_state(self) -> None:
@@ -464,7 +572,8 @@ class TestReconcile:
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "exited"
         assert "test-deployment" not in manager.state.list_deployments()
         assert 9500 not in manager.port_allocator.allocated
 
@@ -487,7 +596,8 @@ class TestReconcile:
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "dead"
         assert "test-deployment" not in manager.state.list_deployments()
 
     def test_reconcile_gone_container_clears_state(self) -> None:
@@ -508,7 +618,8 @@ class TestReconcile:
         resolved = _make_resolved()
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "missing"
         assert "test-deployment" not in manager.state.list_deployments()
         assert 9500 not in manager.port_allocator.allocated
 
@@ -534,7 +645,8 @@ class TestReconcile:
         result = manager.reconcile("test-deployment", resolved)
         await asyncio.sleep(0)
 
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "missing"
         assert "test-deployment" not in manager._health_tasks
         assert task.cancelled()
         assert "test-deployment" not in manager.state.list_deployments()
@@ -551,7 +663,8 @@ class TestReconcile:
 
         resolved = _make_resolved(deployment_name="nonexistent")
         result = manager.reconcile("nonexistent", resolved)
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "missing"
 
     def test_adopted_metadata_preserves_served_model_name_override(self) -> None:
         """Adopted served_model_name from runtime_args is authoritative.
@@ -573,9 +686,9 @@ class TestReconcile:
         )
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is not None
+        assert result.info is not None
         # runtime_args value wins, not model_defaults
-        assert result.metadata.get("served_model_name") == "override-name"
+        assert result.info.metadata.get("served_model_name") == "override-name"
 
     def test_adopted_metadata_absent_served_model_name(self) -> None:
         """Adopted metadata omits served_model_name when not in runtime_args."""
@@ -592,9 +705,9 @@ class TestReconcile:
         )
         result = manager.reconcile("test-deployment", resolved)
 
-        assert result is not None
+        assert result.info is not None
         # served_model_name should not be injected from model_defaults
-        assert "served_model_name" not in result.metadata
+        assert "served_model_name" not in result.info.metadata
 
 
 class TestReconcileIntegration:
@@ -639,11 +752,11 @@ class TestReconcileIntegration:
 
         resolved = _make_resolved()
 
-        # Before load, reconcile should adopt the running container
+        # Before load, reconcile should adopt the running container as loading
         result = manager.reconcile("test-deployment", resolved)
-        assert result is not None
-        assert result.status == "running"
-        assert result.container_id == "abc123"  # adopted container
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert result.info.container_id == "abc123"  # adopted container
 
     async def test_reconcile_clears_stale_before_load(self) -> None:
         """Reconcile clears exited container before load succeeds."""
@@ -690,7 +803,8 @@ class TestReconcileIntegration:
 
         # Reconcile clears stale exited container
         result = manager.reconcile("test-deployment", resolved)
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "exited"
 
         # Now factory should return None (container gone)
         factory.return_value.containers.list = lambda all=False, filters=None: []
@@ -709,7 +823,8 @@ class TestReconcileIntegration:
         resolved = _make_resolved()
         # Reconcile finds no container → returns None
         result = manager.reconcile("test-deployment", resolved)
-        assert result is None
+        assert result.info is None
+        assert result.container_status == "missing"
 
         # Unload should be idempotent (no state to clear)
         try:
@@ -728,3 +843,636 @@ class TestReconcileIntegration:
             port_allocator=PortAllocator(base_port=9500),
             docker_client_factory=docker_client_factory,
         )
+
+
+class TestHealthAwareReconciliation:
+    """Phase 1: Health-aware reconciliation tests (T1.1/T1.3/T1.4)."""
+
+    def _make_manager(
+        self,
+        docker_client_factory: MagicMock | None = None,
+    ) -> LifecycleManager:
+        registry = AdapterRegistry()
+        return LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=docker_client_factory,
+        )
+
+    # T1.1 — Health-aware adoption tests
+
+    def test_reconcile_returns_reconcile_result(self) -> None:
+        """reconcile() returns a ReconcileResult, not DeploymentInfo."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert isinstance(result, ReconcileResult)
+
+    def test_reconcile_running_container_adopts_as_loading(self) -> None:
+        """Adoption creates status='loading', not 'running'."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert result.info.port == 9510
+        assert result.info.metadata["health_timeout_seconds"] == 300.0
+        assert result.container_status == "running"
+        assert 9510 in manager.port_allocator.allocated
+
+    def test_reconcile_running_container_preserves_loading(self) -> None:
+        """Existing 'loading' state is not coerced to 'running'."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="loading",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert result.container_status == "running"
+
+    def test_reconcile_running_container_preserves_error(self) -> None:
+        """Existing 'error' state is not coerced to 'running'."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="error",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "error"
+        assert result.container_status == "running"
+
+    def test_reconcile_running_container_preserves_running(self) -> None:
+        """Existing 'running' state is preserved (no change)."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "running"
+
+    def test_reconcile_stopped_container_re_adopted_as_loading(self) -> None:
+        """Existing 'stopped' is treated as stale; re-adopted as loading."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="stopped",
+            container_id="old-123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert result.info.container_id == "abc123"  # adopted container
+        assert result.info.port == 9510
+
+    # T1.1 — Health task tests
+
+    async def test_reconcile_adopted_starts_health_task(self) -> None:
+        """Health polling is started for newly adopted containers."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        # Health task should exist in async context
+        assert "test-deployment" in manager._health_tasks
+
+    async def test_reconcile_existing_no_duplicate_health_task(self) -> None:
+        """No duplicate health task when one already exists."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        resolved = _make_resolved()
+        result1 = manager.reconcile("test-deployment", resolved)
+        assert result1.info is not None
+        assert result1.info.status == "loading"
+        task1 = manager._health_tasks.get("test-deployment")
+
+        # Second reconcile should not create a duplicate
+        result2 = manager.reconcile("test-deployment", resolved)
+        assert result2.info is not None
+        task2 = manager._health_tasks.get("test-deployment")
+        assert task1 is task2
+
+    async def test_reconcile_existing_loading_starts_missing_health_task(self) -> None:
+        """Existing 'loading' deployment with no health task gets one started."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        # Pre-seed a loading deployment without a health task
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="mock",
+            port=9500,
+            status="loading",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+
+    async def test_reconcile_existing_loading_replaces_done_health_task(self) -> None:
+        """Existing 'loading' deployment gets a new task if the old one is done."""
+        container = _make_mock_container(status="running")
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 60.0
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="mock",
+            port=9500,
+            status="loading",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+
+        done_task = asyncio.create_task(asyncio.sleep(0))
+        await done_task
+        assert done_task.done()
+        manager._health_tasks["test-deployment"] = done_task
+
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+
+        replacement = manager._health_tasks["test-deployment"]
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert replacement is not done_task
+        assert not replacement.done()
+
+        replacement.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await replacement
+
+    # T1.3 — _ensure_health_task event-loop safety
+
+    def test_ensure_health_task_no_event_loop(self) -> None:
+        """_ensure_health_task() does not crash when no event loop is running."""
+        manager = self._make_manager()
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="loading",
+            container_id="abc123",
+        )
+        # Should not raise — logs a warning and returns
+        manager._ensure_health_task("test-deployment", info)
+        assert "test-deployment" not in manager._health_tasks
+
+    # T1.4 — Docker-unreachable reconciliation
+
+    def test_reconcile_docker_unreachable_returns_docker_error(self) -> None:
+        """Docker unreachable returns ReconcileResult with docker_error."""
+        manager = self._make_manager(
+            docker_client_factory=MagicMock(
+                side_effect=docker.errors.DockerException(
+                    "cannot connect to Docker daemon"
+                ),
+            ),
+        )
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is None
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+        assert "docker" in result.docker_error.lower()
+
+    def test_reconcile_docker_unreachable_preserves_in_memory_state(self) -> None:
+        """Docker unreachable preserves in-memory state and reports error."""
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager = self._make_manager(
+            docker_client_factory=MagicMock(
+                side_effect=docker.errors.DockerException(
+                    "connection refused"
+                ),
+            ),
+        )
+        manager.state.add(existing)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "running"  # preserved
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+
+    def test_reconcile_gone_container_returns_missing(self) -> None:
+        """Container gone returns container_status='missing'."""
+        factory = _make_factory(None)
+        manager = self._make_manager(factory)
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is None
+        assert result.container_status == "missing"
+        assert result.docker_error is None
+
+    def test_reconcile_status_docker_error_preserves_in_memory_state(self) -> None:
+        """Docker status failures after lookup preserve state and report error."""
+
+        class StatusErrorContainer:
+            labels = {
+                "switchyard.managed": "true",
+                "switchyard.deployment": "test-deployment",
+            }
+            short_id = "abc123"
+            name = "test-container"
+
+            @property
+            def attrs(self) -> dict[str, Any]:
+                raise docker.errors.DockerException("status failed")
+
+            def remove(self, *, force: bool) -> None:
+                raise AssertionError("remove should not be called")
+
+        factory = _make_factory(StatusErrorContainer())
+        manager = self._make_manager(factory)
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(existing)
+        manager.port_allocator.allocate(port=9500)
+
+        result = manager.reconcile("test-deployment", _make_resolved())
+
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+        assert manager.state.get("test-deployment").status == "running"
+        assert 9500 in manager.port_allocator.allocated
+
+    def test_reconcile_remove_docker_error_preserves_in_memory_state(self) -> None:
+        """Docker remove failures after status lookup preserve state."""
+        container = _make_mock_container(status="exited")
+        container.remove.side_effect = docker.errors.DockerException(
+            "remove failed"
+        )
+        factory = _make_factory(container)
+        manager = self._make_manager(factory)
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="vllm",
+            port=9500,
+            status="running",
+            container_id="abc123",
+        )
+        manager.state.add(existing)
+        manager.port_allocator.allocate(port=9500)
+
+        result = manager.reconcile("test-deployment", _make_resolved())
+
+        assert result.info is not None
+        assert result.info.status == "running"
+        assert result.container_status == "unknown"
+        assert result.docker_error is not None
+        assert manager.state.get("test-deployment").status == "running"
+        assert 9500 in manager.port_allocator.allocated
+
+    # T1.5 — load_model reconciliation result handling
+
+    async def test_load_model_docker_error_raises_runtime_error(self) -> None:
+        """load_model() raises RuntimeError when Docker is unreachable."""
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=MagicMock(
+                side_effect=docker.errors.DockerException(
+                    "cannot connect"
+                ),
+            ),
+        )
+        resolved = _make_resolved()
+        with pytest.raises(RuntimeError, match="docker"):
+            await manager.load_model("test-deployment", resolved)
+
+    async def test_load_model_already_running_raises_value_error(self) -> None:
+        """load_model() raises ValueError when deployment is already running."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                raise RuntimeError("should not start")
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        # Pre-seed running state so reconcile preserves it
+        existing = DeploymentInfo(
+            model_name="test-deployment",
+            backend="mock",
+            port=9510,
+            status="running",
+            container_id="existing-123",
+        )
+        manager.state.add(existing)
+        resolved = _make_resolved()
+        with pytest.raises(ValueError, match="already running"):
+            await manager.load_model("test-deployment", resolved)
+
+    async def test_load_model_loading_raises_value_error(self) -> None:
+        """load_model() raises ValueError when deployment is loading."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                raise RuntimeError("should not start")
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        resolved = _make_resolved()
+        # First reconcile adopts as loading
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        # Second load should reject
+        with pytest.raises(ValueError, match="already starting"):
+            await manager.load_model("test-deployment", resolved)
+
+    async def test_load_model_error_state_raises_value_error(self) -> None:
+        """load_model() raises ValueError when deployment is in error state."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class MockAdapter(BackendAdapter):
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                raise RuntimeError("should not start")
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        # Pre-seed error state
+        info = DeploymentInfo(
+            model_name="test-deployment",
+            backend="mock",
+            port=9510,
+            status="error",
+            container_id="abc123",
+        )
+        manager.state.add(info)
+        resolved = _make_resolved()
+        with pytest.raises(ValueError, match="error state"):
+            await manager.load_model("test-deployment", resolved)
+
+    async def test_load_model_no_container_starts_successfully(self) -> None:
+        """load_model() starts successfully when no container exists."""
+        factory = _make_factory(None)  # no container
+
+        class MockAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                self.starts: list[tuple[ResolvedDeployment, int]] = []
+
+            def start(
+                self, resolved: ResolvedDeployment, port: int,
+            ) -> DeploymentInfo:
+                self.starts.append((resolved, port))
+                return DeploymentInfo(
+                    model_name=resolved.deployment_name,
+                    backend=resolved.backend,
+                    port=port,
+                    status="loading",
+                    container_id=f"mock-{port}",
+                )
+
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", MockAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        resolved = _make_resolved()
+        info = await manager.load_model("test-deployment", resolved)
+        assert info.status == "loading"
+        adapter = manager._adapters["mock"]
+        assert len(adapter.starts) == 1
+
+
+class TestIntegrationReconcileHealthPoll:
+    """T5.1/T5.2: End-to-end integration of reconcile adoption and health poll."""
+
+    async def test_reconcile_adopt_health_poll_to_running(self) -> None:
+        """Reconcile adopts as loading, health poll transitions to running."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class HealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "running"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", HealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 0.01
+        resolved = _make_resolved()
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        await manager._wait_for_status("test-deployment", "running", timeout=5.0)
+        assert manager.get_status("test-deployment") == "running"
+
+    async def test_reconcile_adopt_health_poll_to_error(self) -> None:
+        """Reconcile adopts as loading, health poll transitions to error."""
+        container = _make_mock_container(status="running", host_port=9510)
+        factory = _make_factory(container)
+
+        class UnhealthyAdapter(BackendAdapter):
+            def __init__(self, **kwargs: Any) -> None:  # noqa: ANN003
+                pass
+            def start(self, resolved, port: int) -> DeploymentInfo:
+                return DeploymentInfo(
+                    model_name="test", backend="mock", port=port,
+                    status="loading", container_id="x",
+                )
+            def stop(self, deployment: DeploymentInfo) -> None: pass
+            def health(self, deployment: DeploymentInfo) -> str: return "error"
+            def endpoint(self, deployment: DeploymentInfo) -> str: return ""
+
+        registry = AdapterRegistry()
+        registry.register("mock", UnhealthyAdapter)
+        manager = LifecycleManager(
+            registry=registry,
+            port_allocator=PortAllocator(base_port=9500),
+            docker_client_factory=factory,
+        )
+        manager._health_interval = 0.01
+        resolved = _make_resolved(
+            overrides={"health_timeout_seconds": 0.1},
+        )
+        result = manager.reconcile("test-deployment", resolved)
+        assert result.info is not None
+        assert result.info.status == "loading"
+        assert "test-deployment" in manager._health_tasks
+        await manager._wait_for_status("test-deployment", "error", timeout=5.0)
+        assert manager.get_status("test-deployment") == "error"
