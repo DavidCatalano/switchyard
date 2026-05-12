@@ -71,7 +71,7 @@ Source files:
 
 | Classification | Count | Fields |
 |---|---|---|
-| (A) CLI flag | 36 | All fields except `model` (special), `repo` (C), `device` (B), `hf_token` (C), `extra_args` (passthrough) |
+| (A) CLI flag | 35 | All fields except `model` (special), `repo` (C), `device` (B), `hf_token` (C), `extra_args` (passthrough) |
 | (A) CLI — special | 1 | `model` — renders as `--model`, resolved from store path by the resolver |
 | (A) CLI — passthrough | 1 | `extra_args` — verbatim dict, operator escape hatch |
 | (B) Switchyard-only | 1 | `device` — shapes container/device/env config, explicitly skipped in `_build_cli_args` |
