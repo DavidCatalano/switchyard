@@ -52,7 +52,7 @@ This work tightens the typed layer, enforces the two-bucket contract, and provid
 ## 3. Implementation Considerations
 
 - The resolver stays stateless. `ResolvedDeployment` is rebuilt fresh per operation (load, reconcile, preview). No snapshotting or freeze-at-creation.
-- `VLLMRuntimeConfig` is the canonical typed boundary. The cascade pipeline merges into `dict[str, Any]`, then validates through `VLLMRuntimeConfig.model_validate()` in the adapter. Phase A moves this validation earlier (to config load time) and tightens the model.
+- `VLLMRuntimeConfig` is the canonical typed boundary. The cascade pipeline merges into `dict[str, Any]`, then validates through `VLLMRuntimeConfig.model_validate()`. Phase A moves validation to deployment resolution (before adapter start) and tightens the model.
 - The preview API is a read-only projection of the resolved deployment. It reuses the resolver and adapter's `_build_cli_args` without launching any containers.
 
 ---
