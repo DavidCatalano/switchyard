@@ -15,8 +15,8 @@ Execute the PRD's three phases in sequence: schema hardening (tighten `VLLMRunti
 Key existing code to work from:
 - `switchyard-api/src/switchyard/config/models.py` — `VLLMRuntimeConfig` (line 398+), entity models
 - `switchyard-api/src/switchyard/config/loader.py` — `_merge_runtime_args` (shallow merge), `resolve_deployment`
-- `switchyard-api/src/switchyard/adapters/vllm.py` — `_build_cli_args` (line 118+), `start()` (line 170+)
-- `switchyard-api/src/switchyard/app.py` — `_deep_merge` (line ~597, currently only used for config overrides), `_mask_sensitive_args` (line ~425)
+- `switchyard-api/src/switchyard/adapters/vllm.py` — `_build_cli_args` (line 118+), `start()` (line 171+) — **`start()` owns full launch construction** (env, ports, labels, volumes, device requests), not just CLI args
+- `switchyard-api/src/switchyard/app.py` — `_mask_sensitive_args` (line ~425) — **dict-only, cannot redact flat CLI lists**
 - `switchyard-api/tests/test_vllm_resolved_command.py` — existing resolved→CLI test pattern
 - `switchyard-api/tests/live/` — live smoke test fixtures (`live_docker`, `live_backend_url`)
 
@@ -29,8 +29,9 @@ Key existing code to work from:
 **Goal**: Enforce the two-bucket strict contract on `VLLMRuntimeConfig` and fix adapter serialization bugs.
 
 #### Tasks
-- [ ] **A1**: Add `model_config = {"extra": "forbid"}` to `VLLMRuntimeConfig` (models.py). Top-level typos in YAML runtime args now reject with Pydantic validation error at merge time, before any Docker call.
-  - Test: `test_config_resolution.py` — unknown key in `runtime_overrides` raises `ValidationError`
+- [ ] **A1**: Add `model_config = {"extra": "forbid"}` to `VLLMRuntimeConfig` (models.py).
+- [ ] **A1.5**: Add explicit validation in `resolve_deployment()` (loader.py). After merging runtime args, call `VLLMRuntimeConfig.model_validate(merged_args)` before constructing `ResolvedDeployment`. Typos now surface at resolution time, before any Docker call.
+  - Test: `test_config_resolution.py` — unknown key in any cascade layer raises `ValidationError` at resolve time
 - [ ] **A2**: Replace hardcoded skip tuple in `_build_cli_args` (vllm.py:143) with structural skip derived from Pydantic field metadata. Mark `device` with `Field(json_schema_extra={"switchyard_only": True})` and derive skip set via `VLLMRuntimeConfig.model_fields[<name>].json_schema_extra`.
   - Confirm Pydantic v2 access path for `json_schema_extra` during implementation (forward note from consultant).
   - Test: `test_vllm_resolved_command.py` — `device` never appears in CLI args; adapter rejects no fields by string matching
@@ -38,18 +39,25 @@ Key existing code to work from:
   - Test: `test_vllm_resolved_command.py` — `extra_args: {some_config: {"a": 1}}` renders as valid JSON
 - [ ] **A4**: Normalize `extra_args` keys through `_field_to_flag` (snake-case → kebab-case) so they match vLLM's CLI convention. Currently `extra_args` keys render verbatim (vllm.py:162).
   - Test: `test_vllm_resolved_command.py` — `extra_args: {disable_log_requests: true}` renders as `--disable-log-requests`
-- [ ] **A5**: Add `model_config = {"extra": "forbid"}` test for cascade path. Verify that a typo in `runtime.defaults`, `model.runtime_defaults`, or `deployment.runtime_overrides` is caught when the merged dict is validated through `VLLMRuntimeConfig.model_validate()`.
-  - Test: `test_config_resolution.py` — typo in each cascade layer raises
+- [ ] **A5**: Verify that typos in each cascade layer (`runtime.defaults`, `model.runtime_defaults`, `deployment.runtime_overrides`) are caught when `resolve_deployment()` validates through `VLLMRuntimeConfig.model_validate()`.
+  - Test: `test_config_resolution.py` — typo in each cascade layer raises `ValidationError`
 - [ ] **A6**: Document `hf_token` dual rendering in the adapter. Add a comment at vllm.py:201-202 noting that `hf_token` renders to both CLI (`--hf-token`) and env (`HF_TOKEN`) intentionally — vLLM reads from both paths (see audit Observation #2 in `SEP-004-05-CONTEXT-runtime-field-audit.md`).
+- [ ] **A7**: Extract `VLLMAdapter.build_launch_spec(resolved)` method. Move the full launch construction from `start()` (env, ports, normalized container options, labels, volumes, name, device requests/CPU env vars) into a structured dict-returning method. `start()` consumes this dict for `containers.run()`; Phase C preview returns it as JSON. This is the single critical anti-drift mechanism.
+  - Test: `test_vllm_adapter.py` — `build_launch_spec` returns same structure that `start()` passes to Docker SDK.
 
 ### Phase 2: Cascade Contract
 
 **Goal**: Replace shallow `dict.update` cascade merge with deep merge for nested dicts, preserving last-in-wins at top level.
 
 #### Tasks
-- [ ] **B1**: Replace `merged.update(layer)` in `_merge_runtime_args` (loader.py) with `_deep_merge`. Import `_deep_merge` directly from `app.py:597+` (default to import-direct; extract to shared utility only if a second caller emerges).
+- [ ] **B1**: Create `switchyard/core/merge.py` with `_deep_merge` utility. Extract from `app.py:597+` to neutral module to avoid import cycle (`app.py` imports from `loader.py`). Update `app.py` and `loader.py` to import from new module.
+  - Test: `test_config_resolution.py` — `_deep_merge` behaves identically to old `app.py` version
   - Test: `test_config_resolution.py` — partial `speculative_config` override at deployment level retains runtime-level keys (e.g., runtime provides `method`, deployment overrides `num_speculative_tokens`, result has both)
-- [ ] **B2**: Verify cascade order is `model.defaults → runtime.defaults → model.runtime_defaults → deployment.runtime_overrides` (matches code, per PRD rationale). Add explicit docstring to `_merge_runtime_args` documenting the order and rationale.
+- [ ] **B1.5**: Extend `_deep_merge` to support `null` as wipe signal. If override value is `None`/`null`, the key is removed from result (equivalent to Helm/Kustomize null semantics).
+  - Test: `test_config_resolution.py` — `speculative_config: null` at deployment level wipes all lower-layer entries
+- [ ] **B2**: Replace `merged.update(layer)` in `_merge_runtime_args` (loader.py) with `_deep_merge`. Apply to all four cascade layers including `extra_args` (which now deep-merges instead of replacing).
+  - Test: `test_config_resolution.py` — partial `speculative_config` override at deployment level retains runtime-level keys (e.g., runtime provides `method`, deployment overrides `num_speculative_tokens`, result has both)
+- [ ] **B2.5**: Verify cascade order is `model.defaults → runtime.defaults → model.runtime_defaults → deployment.runtime_overrides` (matches code, per PRD rationale). Add explicit docstring to `_merge_runtime_args` documenting the order and rationale.
   - Test: `test_config_resolution.py` — known field at each layer verifies last-in-wins; top-level `dtype` from runtime.defaults wins over model.defaults
 - [ ] **B3**: **Cascade provenance tracking** — build a parallel `dict[str, str]` mapping each merged key to its source layer name. Surface in error messages when `extra: "forbid"` rejects a key, so diagnostics name the source layer (e.g., "unknown key 'max_seqs' in deployment.runtime_overrides").
   - Implementation: track provenance during merge loop; on `ValidationError`, walk the provenance map to attach layer context to the error message.
@@ -60,12 +68,12 @@ Key existing code to work from:
 **Goal**: Expose `GET /api/deployments/{deployment}/preview` returning structured JSON container launch spec.
 
 #### Tasks
-- [ ] **C1**: Add preview route to `_register_routes` (app.py). Resolves the deployment, builds CLI args via `_build_cli_args`, and returns structured JSON.
-  - Response shape: `image`, `command` (flat list: `["serve", "--host", "0.0.0.0", "--port", "8000", ...]`), `environment` (dict), `mounts` (dict), `network`, `host_port` (allocated or next-available), `accelerator_ids`, `container_options`
-  - Environment must include adapter-injected vars: `VLLM_CPU_KVCACHE_SPACE` and `VLLM_CPU_NUM_OF_RESERVED_CPU` (CPU device only, vllm.py:270-271), `HF_TOKEN` (when `runtime.hf_token` is set, vllm.py:201-202), plus `resolved.container_environment`
-  - Include hardcoded `--host 0.0.0.0` and `--port <internal_port>` prepended in `start()` (vllm.py:194-197) — these are not on `VLLMRuntimeConfig` but must appear in preview
-- [ ] **C2**: Apply `_mask_sensitive_args` to the preview response. Reuse existing function (app.py:425-442) to redact `hf_token`, `api_key`, and other secret-shaped fields in both `command` and `environment`.
-  - Test: `test_app.py` — preview with `hf_token` in runtime_args shows `***redacted***`
+- [ ] **C1**: Add preview route to `_register_routes` (app.py). Resolves the deployment, calls `adapter.build_launch_spec(resolved)`, and returns structured JSON.
+  - Response shape: `image`, `command` (flat list: `["--host", "0.0.0.0", "--port", "8000", ...]` — **no** `"serve"` prefix, matches exact Docker SDK command), `environment` (dict), `mounts` (dict), `network`, `host_port`, `accelerator_ids`, `container_options`
+  - Port semantics: if deployment is running (reconciled state exists), return actual host port; if stopped, return `host_port: null` with `port_range` context. No allocator mutation.
+  - Environment must include adapter-injected vars: `VLLM_CPU_KVCACHE_SPACE` and `VLLM_CPU_NUM_OF_RESERVED_CPU` (CPU device only), `HF_TOKEN` (when `runtime.hf_token` is set), plus `resolved.container_environment`
+- [ ] **C2**: Add list-aware sensitive field redactor. The existing `_mask_sensitive_args` (app.py:425-442) only masks dictionaries by key. Add a companion helper that redacts flat CLI command lists by recognizing the `--flag value` pattern (e.g., `["--hf-token", "secret"]` → `["--hf-token", "***redacted***"]`). Apply to both `command` and `environment` in the preview response.
+  - Test: `test_app.py` — preview with `hf_token` in runtime_args shows `***redacted***` in both command list and environment dict
 - [ ] **C3**: Exclude Switchyard process-local settings (`.env`-sourced `SWITCHYARD_*` variables) from the preview. These are control-plane config, not deployment config.
   - Test: `test_app.py` — no `SWITCHYARD_*` keys appear in preview response
 - [ ] **C4**: Add CPU smoke test (tinyllama) and GPU smoke test (qwen3.6-27b-fp8) under `tests/live/` that exercise the preview endpoint against the running API. Verify the preview command matches what `start()` would launch.
@@ -77,7 +85,8 @@ Key existing code to work from:
 ## Dependencies
 
 ### Critical Path
-1. A1–A6 (schema hardening) must complete before B1–B3 (cascade contract) because `extra: "forbid"` validation exercises the merged dict
+1. A1–A7 (schema hardening) must complete before B1–B3 (cascade contract) because `extra: "forbid"` validation exercises the merged dict
+2. A7 (adapter launch-spec extraction) is the single most important anti-drift task and unblocks C1–C4
 2. B1–B3 must complete before C1–C4 (preview API) because preview depends on correct cascade merge output
 3. All implementation must be under `switchyard-api/`
 
@@ -88,10 +97,15 @@ Key existing code to work from:
 
 ## Technical Architecture Decisions
 
-**IMPORTANT:** Per AGENTS.md, no architectural decisions are captured here during planning. Decisions that emerge during implementation will be recorded in the PR document.
-
-Items to confirm during implementation (not decisions):
-- Pydantic v2 `model_fields[<name>].json_schema_extra` access path for Switchyard-only field introspection
+### Agreed Decisions
+- **Shared merge utility**: `_deep_merge` extracted to `switchyard/core/merge.py` to avoid import cycle between `app.py` and `loader.py` (Codex item 1).
+- **Validation at resolution**: `resolve_deployment()` calls `VLLMRuntimeConfig.model_validate()` before returning `ResolvedDeployment`, so typos surface before any Docker call (Codex item 2).
+- **Adapter-owned launch spec**: `VLLMAdapter.build_launch_spec(resolved)` returns full structured launch dict consumed by both `start()` and preview API. Prevents drift between preview and actual launch (Codex item 3).
+- **Preview port semantics**: Three-state — running → actual reconciled port; stopped → `null` with `port_range` context. No allocator mutation during read (Codex item 6).
+- **List-aware redaction**: Separate helper for flat CLI command lists (flag/value pair pattern) in addition to dict-based `_mask_sensitive_args` (Codex item 4).
+- **extra_args cascade**: Deep-merge through all layers; later layers overlay lower-layer `extra_args` entries (Codex item 7).
+- **Null as wipe signal**: Setting a nested field to `null` at any layer fully resets it, consistent with Helm/Kustomize semantics (Codex item 8).
+- **Exact launch spec parity**: Preview `command` matches exact Docker SDK command (no `ENTRYPOINT` prepended; no `"serve"` prefix) (Codex item 5).
 
 ---
 

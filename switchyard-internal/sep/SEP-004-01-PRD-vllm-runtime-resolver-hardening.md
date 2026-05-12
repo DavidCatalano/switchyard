@@ -29,11 +29,16 @@ This work tightens the typed layer, enforces the two-bucket contract, and provid
 
 ### Phase B: Cascade Contract — GH #4
 - Replace shallow `dict.update` cascade merge with deep merge for nested dicts (`speculative_config`, `limit_mm_per_prompt`). Partial deployment-level overrides must not wipe lower-layer nested values.
+- `null` as wipe signal: setting a nested field to `null` at any layer fully resets it (equivalent to Helm/Kustomize `null` semantics). A higher layer setting `speculative_config: null` wipes all lower-layer entries.
+- `extra_args` cascade: treat `extra_args` as a nested dict subject to the same deep-merge rules. `deployment.extra_args` overlays (and can wipe with `null`) lower-layer `extra_args` entries rather than replacing the entire dict.
 - Maintain last-in-wins semantics at the top level: `model.defaults → runtime.defaults → model.runtime_defaults → deployment.runtime_overrides`. Rationale: `runtime.defaults` overrides `model.defaults` because runtime defaults describe how the engine wants to run; `model.runtime_defaults` exists as the explicit slot when a specific model needs to override runtime-level settings (currently unused but reserved).
 
 ### Phase C: Preview API — GH #4
 - Expose a structured JSON endpoint returning the full container launch spec for a named deployment: image, command/args (rendered CLI flags), environment, mounts, network, port, accelerator placement. Equivalent to what would appear in a hand-written `docker-compose.yml`.
+- Exact launch spec parity: the preview `command` field matches exactly what Docker SDK receives (e.g., `["--host", "0.0.0.0", "--port", "8000", ...]`). The image's `ENTRYPOINT` (e.g., `vllm serve`) is not prepended — it's implicit in the image.
+- Port semantics: if deployment is running, return actual reconciled host port; if stopped, return `host_port: null` with `port_range` context. No mutating the allocator state during a read.
 - Exclude Switchyard process-local settings (`.env`-sourced `SWITCHYARD_*` variables).
+- Sensitive field redaction: `hf_token`, `api_key`, and other secret-shaped fields must be redacted in both `command` (flag/value pair pattern) and `environment` (dict key pattern).
 - Endpoint shape: `GET /api/deployments/{deployment}/preview`.
 
 ### Non-Goals
@@ -52,8 +57,8 @@ This work tightens the typed layer, enforces the two-bucket contract, and provid
 ## 3. Implementation Considerations
 
 - The resolver stays stateless. `ResolvedDeployment` is rebuilt fresh per operation (load, reconcile, preview). No snapshotting or freeze-at-creation.
-- `VLLMRuntimeConfig` is the canonical typed boundary. The cascade pipeline merges into `dict[str, Any]`, then validates through `VLLMRuntimeConfig.model_validate()`. Phase A moves validation to deployment resolution (before adapter start) and tightens the model.
-- The preview API is a read-only projection of the resolved deployment. It reuses the resolver and adapter's `_build_cli_args` without launching any containers.
+- `VLLMRuntimeConfig` is the canonical typed boundary. `resolve_deployment()` validates merged runtime args via `VLLMRuntimeConfig.model_validate()` before constructing `ResolvedDeployment`, so typos surface before any Docker call.
+- The adapter owns launch construction. `VLLMAdapter` provides a `build_launch_spec(resolved)` method returning the full structured launch dict (command, env, mounts, network, device requests, labels, name). `start()` consumes this dict; the preview API returns it as JSON. This shared path prevents drift between preview and actual launch.
 
 ---
 
