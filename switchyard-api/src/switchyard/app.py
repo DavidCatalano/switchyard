@@ -17,6 +17,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError as PydanticValidationError
 
 from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader, resolve_deployment
@@ -36,6 +37,53 @@ async def _validation_handler(
         status_code=400,
         content={"detail": exc.errors()[0].get("msg", "invalid request")},
     )
+
+
+async def _resolver_handler(
+    request: Request, exc: PydanticValidationError,
+) -> JSONResponse:
+    """Handle ValidationError from config resolution.
+
+    When resolve_deployment() validates merged runtime args through
+    VLLMRuntimeConfig, any typos surface as ValidationError. This handler
+    catches them and returns a structured 400 instead of a 500.
+    """
+    errors = exc.errors()
+    if errors:
+        first = errors[0]
+        loc = " ".join(str(p) for p in first.get("loc", []))
+        msg = first.get("msg", "config validation error")
+        detail = f"{msg} (field: {loc})" if loc else msg
+    else:
+        detail = "config validation error"
+    return JSONResponse(
+        status_code=400,
+        content={"detail": detail},
+    )
+
+
+def _resolve_deployment(
+    config: Config,
+    deployment: str,
+) -> Any:
+    """Resolve deployment, converting ValidationError to HTTP 400.
+
+    Wraps ``resolve_deployment()`` so that Pydantic validation errors
+    from runtime config typos surface as clear 400 responses rather
+    than 500 errors.
+    """
+    try:
+        return resolve_deployment(config, deployment)
+    except PydanticValidationError as exc:
+        errors = exc.errors()
+        if errors:
+            first = errors[0]
+            loc = " ".join(str(p) for p in first.get("loc", []))
+            msg = first.get("msg", "config validation error")
+            detail = f"{msg} (field: {loc})" if loc else msg
+        else:
+            detail = "config validation error"
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _resolve_active_host(config: Config) -> tuple[str, str, str, list[int]]:
@@ -102,6 +150,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     # Create FastAPI app
     app = FastAPI(title="Switchyard API")
     app.add_exception_handler(RequestValidationError, _validation_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(PydanticValidationError, _resolver_handler)  # type: ignore[arg-type]
 
     # Add middleware
     app.add_middleware(RequestContextMiddleware)
@@ -164,7 +213,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         results: list[dict[str, Any]] = []
         for dep_name, dep_cfg in config.deployments.items():
-            resolved = resolve_deployment(config, dep_name)
+            resolved = _resolve_deployment(config, dep_name)
             result = manager.reconcile(dep_name, resolved)
 
             if result.info is not None:
@@ -197,7 +246,7 @@ def _register_routes(app: FastAPI) -> None:
         dep_cfg = config.deployments[deployment]
 
         # Resolve and reconcile
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         result = manager.reconcile(deployment, resolved)
 
         if result.info is not None:
@@ -236,7 +285,7 @@ def _register_routes(app: FastAPI) -> None:
             )
 
         # Resolve and reconcile
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         result = manager.reconcile(deployment, resolved)
 
         if result.info is not None:
@@ -277,7 +326,7 @@ def _register_routes(app: FastAPI) -> None:
                 detail=f"deployment {deployment!r} not found in config",
             )
 
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
 
         try:
             info = await manager.load_model(deployment, resolved)
@@ -315,7 +364,7 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile first: if a running container exists after API restart,
         # adopt it into state so it can be stopped
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         manager.reconcile(deployment, resolved)
 
         try:
@@ -347,7 +396,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile to adopt running containers, clear stale state
         if deployment in config.deployments:
-            resolved = resolve_deployment(config, deployment)
+            resolved = _resolve_deployment(config, deployment)
             manager.reconcile(deployment, resolved)
 
         dep = _get_running_deployment(deployment, manager)
@@ -370,7 +419,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile all configured deployments
         for dep_name in config.deployments:
-            resolved = resolve_deployment(config, dep_name)
+            resolved = _resolve_deployment(config, dep_name)
             manager.reconcile(dep_name, resolved)
             # Docker errors are informational — state preserved, don't clear
 
@@ -400,7 +449,7 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile to adopt running containers, clear stale state
         if deployment_name in config.deployments:
-            resolved = resolve_deployment(config, deployment_name)
+            resolved = _resolve_deployment(config, deployment_name)
             manager.reconcile(deployment_name, resolved)
             # Docker errors are informational — state preserved, don't clear
 

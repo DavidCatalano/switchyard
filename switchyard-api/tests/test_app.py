@@ -120,3 +120,130 @@ class TestAppCreation:
         app = create_app()
         # Verify middleware was added (app has user_middleware)
         assert len(app.user_middleware) > 0
+
+
+@pytest.mark.no_isolate
+class TestResolverErrorHandler:
+    """Tests for pydantic.ValidationError handling in API routes (SEP-004)."""
+
+    @pytest.mark.asyncio
+    async def test_typo_in_runtime_overrides_returns_400(self, tmp_path) -> None:
+        """Typo in deployment.runtime_overrides returns 400, not 500."""
+        import os
+
+        import yaml
+
+        from switchyard.app import create_app
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({
+                "hosts": {
+                    "test-host": {
+                        "stores": {
+                            "models": {
+                                "host_path": "/data/models",
+                                "container_path": "/models",
+                            },
+                        },
+                    },
+                },
+                "runtimes": {
+                    "vllm": {
+                        "backend": "vllm",
+                        "image": "vllm/vllm-openai:latest",
+                    },
+                },
+                "models": {
+                    "test-model": {
+                        "source": {
+                            "store": "models",
+                            "path": "test-model",
+                        },
+                    },
+                },
+                "deployments": {
+                    "test-deployment": {
+                        "model": "test-model",
+                        "runtime": "vllm",
+                        "host": "test-host",
+                        "runtime_overrides": {
+                            "max_seqs": 10,  # typo: should be max_num_seqs
+                        },
+                    },
+                },
+            })
+        )
+        os.environ["SWITCHYARD_CONFIG_PATH"] = str(config_file)
+        os.environ["SWITCHYARD_ACTIVE_HOST"] = "test-host"
+
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/deployments/test-deployment/load")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "detail" in body
+        # Error should mention the unknown field
+        assert "max_seqs" in body["detail"] or "extra" in body["detail"].lower()
+
+    @pytest.mark.asyncio
+    async def test_typo_in_runtime_defaults_returns_400(self, tmp_path) -> None:
+        """Typo in runtime.defaults returns 400, not 500."""
+        import os
+
+        import yaml
+
+        from switchyard.app import create_app
+
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text(
+            yaml.dump({
+                "hosts": {
+                    "test-host": {
+                        "stores": {
+                            "models": {
+                                "host_path": "/data/models",
+                                "container_path": "/models",
+                            },
+                        },
+                    },
+                },
+                "runtimes": {
+                    "vllm": {
+                        "backend": "vllm",
+                        "image": "vllm/vllm-openai:latest",
+                        "defaults": {
+                            "max_seqs": 10,  # typo
+                        },
+                    },
+                },
+                "models": {
+                    "test-model": {
+                        "source": {
+                            "store": "models",
+                            "path": "test-model",
+                        },
+                    },
+                },
+                "deployments": {
+                    "test-deployment": {
+                        "model": "test-model",
+                        "runtime": "vllm",
+                        "host": "test-host",
+                    },
+                },
+            })
+        )
+        os.environ["SWITCHYARD_CONFIG_PATH"] = str(config_file)
+        os.environ["SWITCHYARD_ACTIVE_HOST"] = "test-host"
+
+        app = create_app()
+        transport = ASGITransport(app=app, raise_app_exceptions=False)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.post("/api/deployments/test-deployment/load")
+
+        assert response.status_code == 400
+        body = response.json()
+        assert "detail" in body

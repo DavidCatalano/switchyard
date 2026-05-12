@@ -69,10 +69,11 @@ def _normalize_container_options(options: dict[str, Any]) -> dict[str, Any]:
 class LaunchSpec(TypedDict):
     """Structured container launch specification.
 
-    Returned by ``VLLMAdapter.build_launch_spec()`` and consumed by both
-    ``start()`` (for Docker SDK ``containers.run()``) and the preview API
-    (for structured JSON responses). This shared path prevents drift
-    between what operators see in preview and what actually launches.
+    Returned by ``VLLMAdapter.build_launch_spec()`` and consumed by
+    ``start()`` (for Docker SDK ``containers.run()``). Contains Docker SDK
+    types like ``DeviceRequest`` that are not JSON-serializable.
+
+    For preview API responses, use ``build_preview_spec()`` instead.
     """
 
     image: str
@@ -85,6 +86,27 @@ class LaunchSpec(TypedDict):
     network: str | None
     device_requests: list[DeviceRequest] | None
     container_options: dict[str, Any]
+    served_model_name: str
+
+
+class PreviewSpec(TypedDict):
+    """Operator-facing container launch preview.
+
+    Returned by ``VLLMAdapter.build_preview_spec()`` for the preview API.
+    All fields are JSON-serializable and use Switchyard domain language
+    (accelerator_ids, device_type) instead of Docker SDK types.
+    """
+
+    image: str
+    command: list[str]
+    environment: dict[str, str]
+    ports: dict[int, int]
+    labels: dict[str, str]
+    mounts: dict[str, dict[str, str]]
+    network: str | None
+    host_port: int | None
+    accelerator_ids: list[str]
+    device_type: str
     served_model_name: str
 
 
@@ -303,6 +325,64 @@ class VLLMAdapter(BackendAdapter):
             or resolved.deployment_name,
         )
 
+    def build_preview_spec(
+        self,
+        resolved: ResolvedDeployment,
+        host_port: int | None = None,
+    ) -> PreviewSpec:
+        """Build an operator-facing container launch preview.
+
+        Unlike ``build_launch_spec()``, this returns a JSON-serializable
+        dict using Switchyard domain language (accelerator_ids, device_type)
+        instead of Docker SDK types (DeviceRequest).
+
+        Args:
+            resolved: Fully resolved deployment configuration.
+            host_port: Actual host port if deployment is running, None if stopped.
+
+        Returns:
+            A ``PreviewSpec`` dict with all preview configuration fields.
+        """
+        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+        internal_port = resolved.internal_port or _INTERNAL_PORT
+
+        # Derive device type from runtime config
+        device_type = runtime.device or "cuda"
+
+        # Build environment dict for preview
+        env = dict(resolved.container_environment)
+        if runtime.hf_token:
+            env["HF_TOKEN"] = runtime.hf_token
+        if device_type == "cpu":
+            env.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
+            env.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
+
+        return PreviewSpec(
+            image=resolved.image,
+            command=(
+                ["--host", "0.0.0.0", "--port", str(internal_port)]
+                + self._build_cli_args(runtime)
+            ),
+            environment=env,
+            ports={internal_port: host_port} if host_port is not None else {},
+            labels={
+                "switchyard.managed": "true",
+                "switchyard.deployment": resolved.deployment_name,
+                "switchyard.model": resolved.model_name,
+                "switchyard.runtime": resolved.runtime_name,
+                "switchyard.host": resolved.host_name,
+            },
+            mounts=resolved.store_mounts,
+            network=resolved.docker_network or None,
+            host_port=host_port,
+            accelerator_ids=resolved.accelerator_ids,
+            device_type=device_type,
+            served_model_name=runtime.served_model_name
+            or runtime.model
+            or runtime.repo
+            or resolved.deployment_name,
+        )
+
     def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
         """Start a vLLM container.
 
@@ -321,31 +401,32 @@ class VLLMAdapter(BackendAdapter):
         """
         spec = self.build_launch_spec(resolved, port)
 
-        # Build Docker SDK kwargs from the launch spec.
-        # ``remove: False`` is a Docker SDK lifecycle option (not auto-remove on
-        # stop), not a launch configuration concern — stays in start() only.
-        kwargs: dict[str, Any] = {
-            "image": spec["image"],
-            "command": spec["command"],
-            "ports": spec["ports"],
-            "labels": spec["labels"],
-            "volumes": spec["volumes"],
-            "name": spec["name"],
-            "remove": False,
-        }
+        # Apply user container options first, then force-apply Switchyard-owned
+        # fields on top. This prevents user options from overriding managed
+        # fields like name, volumes, labels, and device_requests.
+        kwargs: dict[str, Any] = {}
+
+        # Layer 1: user container options (Docker SDK kwargs)
+        for opt_key, opt_value in spec["container_options"].items():
+            if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
+                kwargs[opt_key].update(opt_value)
+            else:
+                kwargs[opt_key] = opt_value
+
+        # Layer 2: Switchyard-owned fields (always take precedence)
+        kwargs["image"] = spec["image"]
+        kwargs["command"] = spec["command"]
+        kwargs["ports"] = spec["ports"]
+        kwargs["labels"] = spec["labels"]
+        kwargs["volumes"] = spec["volumes"]
+        kwargs["name"] = spec["name"]
+        kwargs["remove"] = False
         if spec["network"]:
             kwargs["network"] = spec["network"]
         if spec["environment"]:
             kwargs["environment"] = spec["environment"]
         if spec["device_requests"] is not None:
             kwargs["device_requests"] = spec["device_requests"]
-
-        # Merge container options (Docker SDK kwargs) after launch spec.
-        for opt_key, opt_value in spec["container_options"].items():
-            if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
-                kwargs[opt_key].update(opt_value)
-            else:
-                kwargs[opt_key] = opt_value
 
         logger.info(
             "starting vllm container image=%s port=%d args=%s",

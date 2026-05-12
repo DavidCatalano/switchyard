@@ -157,4 +157,7 @@ Key existing code to work from:
 
 ## Decision Log
 
-_No decisions logged yet. Decisions made during implementation will be recorded here._
+- 2026-05-12 — Post-Phase 1 review findings addressed:
+  - **Finding 1**: Reverted container_options merge order in `start()` — user options applied first, Switchyard-owned fields force-applied after. Added regression test.
+  - **Finding 2**: Added `_resolve_deployment()` helper wrapping `resolve_deployment()` in all API routes. Converts `PydanticValidationError` → HTTP 400 with field-level detail. Added 2 API integration tests.
+  - **Finding 3**: Split `LaunchSpec` (Docker SDK types) from `PreviewSpec` (JSON-serializable, Switchyard domain language). Added `build_preview_spec()` method.
