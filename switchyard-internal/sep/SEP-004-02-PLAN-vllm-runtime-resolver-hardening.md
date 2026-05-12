@@ -29,21 +29,21 @@ Key existing code to work from:
 **Goal**: Enforce the two-bucket strict contract on `VLLMRuntimeConfig` and fix adapter serialization bugs.
 
 #### Tasks
-- [ ] **A1**: Add `model_config = {"extra": "forbid"}` to `VLLMRuntimeConfig` (models.py).
-- [ ] **A1.5**: Add explicit validation in `resolve_deployment()` (loader.py). After merging runtime args, call `VLLMRuntimeConfig.model_validate(merged_args)` before constructing `ResolvedDeployment`. Typos now surface at resolution time, before any Docker call.
+- [x] **A1**: Add `model_config = {"extra": "forbid"}` to `VLLMRuntimeConfig` (models.py).
+- [x] **A1.5**: Add explicit validation in `resolve_deployment()` (loader.py). After merging runtime args, call `VLLMRuntimeConfig.model_validate(merged_args)` before constructing `ResolvedDeployment`. Typos now surface at resolution time, before any Docker call.
   - Test: `test_config_resolution.py` — unknown key in any cascade layer raises `ValidationError` at resolve time
-- [ ] **A2**: Replace hardcoded skip tuple in `_build_cli_args` (vllm.py:143) with structural skip derived from Pydantic field metadata. Mark `device` with `Field(json_schema_extra={"switchyard_only": True})` and derive skip set via `VLLMRuntimeConfig.model_fields[<name>].json_schema_extra`.
+- [x] **A2**: Replace hardcoded skip tuple in `_build_cli_args` (vllm.py:143) with structural skip derived from Pydantic field metadata. Mark `device` with `Field(json_schema_extra={"switchyard_only": True})` and derive skip set via `VLLMRuntimeConfig.model_fields[<name>].json_schema_extra`.
   - Confirm Pydantic v2 access path for `json_schema_extra` during implementation (forward note from consultant).
   - Test: `test_vllm_resolved_command.py` — `device` never appears in CLI args; adapter rejects no fields by string matching
-- [ ] **A3**: Fix `extra_args` dict serialization. Dict values inside `extra_args` must use `json.dumps()` (matching named dict fields at vllm.py:154-156), not `str(value)`.
+- [x] **A3**: Fix `extra_args` dict serialization. Dict values inside `extra_args` must use `json.dumps()` (matching named dict fields at vllm.py:154-156), not `str(value)`.
   - Test: `test_vllm_resolved_command.py` — `extra_args: {some_config: {"a": 1}}` renders as valid JSON
-- [ ] **A4**: Normalize `extra_args` keys through `_field_to_flag` (snake-case → kebab-case) so they match vLLM's CLI convention. Currently `extra_args` keys render verbatim (vllm.py:162).
+- [x] **A4**: Normalize `extra_args` keys through `_field_to_flag` (snake-case → kebab-case) so they match vLLM's CLI convention. Currently `extra_args` keys render verbatim (vllm.py:162).
   - Test: `test_vllm_resolved_command.py` — `extra_args: {disable_log_requests: true}` renders as `--disable-log-requests`
-- [ ] **A5**: Verify that typos in each cascade layer (`runtime.defaults`, `model.runtime_defaults`, `deployment.runtime_overrides`) are caught when `resolve_deployment()` validates through `VLLMRuntimeConfig.model_validate()`.
+- [x] **A5**: Verify that typos in each cascade layer (`runtime.defaults`, `model.runtime_defaults`, `deployment.runtime_overrides`) are caught when `resolve_deployment()` validates through `VLLMRuntimeConfig.model_validate()`.
   - Test: `test_config_resolution.py` — typo in each cascade layer raises `ValidationError`
-- [ ] **A6**: Document `hf_token` dual rendering in the adapter. Add a comment at vllm.py:201-202 noting that `hf_token` renders to both CLI (`--hf-token`) and env (`HF_TOKEN`) intentionally — vLLM reads from both paths (see audit Observation #2 in `SEP-004-05-CONTEXT-runtime-field-audit.md`).
-- [ ] **A7**: Extract `VLLMAdapter.build_launch_spec(resolved)` method. Move the full launch construction from `start()` (env, ports, normalized container options, labels, volumes, name, device requests/CPU env vars) into a structured dict-returning method. `start()` consumes this dict for `containers.run()`; Phase C preview returns it as JSON. This is the single critical anti-drift mechanism.
-  - Test: `test_vllm_adapter.py` — `build_launch_spec` returns same structure that `start()` passes to Docker SDK.
+- [x] **A6**: Document `hf_token` dual rendering in the adapter. Add a comment at vllm.py:201-202 noting that `hf_token` renders to both CLI (`--hf-token`) and env (`HF_TOKEN`) intentionally — vLLM reads from both paths (see audit Observation #2 in `SEP-004-05-CONTEXT-runtime-field-audit.md`).
+- [x] **A7**: Extract `VLLMAdapter.build_launch_spec(resolved)` method. Move the full launch construction from `start()` (env, ports, normalized container options, labels, volumes, name, device requests/CPU env vars) into a structured dict-returning method. `start()` consumes this dict for `containers.run()`; Phase C preview returns it as JSON. This is the single critical anti-drift mechanism.
+  - Test: `test_vllm_resolved_command.py` — `build_launch_spec` returns same structure that `start()` passes to Docker SDK.
 
 ### Phase 2: Cascade Contract
 

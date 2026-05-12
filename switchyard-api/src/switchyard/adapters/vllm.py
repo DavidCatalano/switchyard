@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from typing import Any, TypedDict
 
 import docker
 import httpx
 from docker import DockerClient
+from docker.types import DeviceRequest
 
 from switchyard.config.models import (
     ResolvedDeployment,
@@ -63,6 +64,28 @@ def _normalize_container_options(options: dict[str, Any]) -> dict[str, Any]:
         ]
 
     return normalized
+
+
+class LaunchSpec(TypedDict):
+    """Structured container launch specification.
+
+    Returned by ``VLLMAdapter.build_launch_spec()`` and consumed by both
+    ``start()`` (for Docker SDK ``containers.run()``) and the preview API
+    (for structured JSON responses). This shared path prevents drift
+    between what operators see in preview and what actually launches.
+    """
+
+    image: str
+    command: list[str]
+    environment: dict[str, str]
+    ports: dict[int, int]
+    labels: dict[str, str]
+    volumes: dict[str, dict[str, str]]
+    name: str
+    network: str | None
+    device_requests: list[DeviceRequest] | None
+    container_options: dict[str, Any]
+    served_model_name: str
 
 
 class VLLMAdapter(BackendAdapter):
@@ -137,10 +160,21 @@ class VLLMAdapter(BackendAdapter):
         if model_source:
             args.extend(["--model", model_source])
 
+        # Derive switchyard-only fields from Pydantic model metadata.
+        # These fields shape container construction but must never reach CLI.
+        _switchyard_only = {
+            name
+            for name, fi in VLLMRuntimeConfig.model_fields.items()
+            if isinstance(fi.json_schema_extra, dict)
+            and fi.json_schema_extra.get("switchyard_only")
+        }
+
         # Iterate over all known named fields (excluding model/repo handled above,
-        # and extra_args handled below)
+        # extra_args handled below, and switchyard-only fields)
         for field_name, value in runtime.model_dump().items():
-            if field_name in ("model", "repo", "extra_args", "device"):
+            if field_name in ("model", "repo", "extra_args"):
+                continue
+            if field_name in _switchyard_only:
                 continue
             if value is None:
                 continue
@@ -157,34 +191,36 @@ class VLLMAdapter(BackendAdapter):
             else:
                 args.extend([flag, str(value)])
 
-        # extra_args passthrough (verbatim key → --key value)
+        # extra_args passthrough: normalize keys through snake→kebab conversion
+        # and JSON-serialize dict values (matching named dict fields).
         for key, value in runtime.extra_args.items():
-            flag = f"--{key}"
+            flag = _field_to_flag(key)
             if isinstance(value, bool):
                 if value:
                     args.append(flag)
+            elif isinstance(value, dict):
+                args.extend([flag, json.dumps(value)])
             else:
                 args.extend([flag, str(value)])
 
         return args
 
-    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
-        """Start a vLLM container.
+    def build_launch_spec(
+        self, resolved: ResolvedDeployment, port: int,
+    ) -> LaunchSpec:
+        """Build the full structured container launch specification.
 
-        Builds CLI flags from the resolved deployment config, launches the
-        container via Docker SDK with port binding and resource limits.
+        This is the single authoritative source for what gets launched.
+        Both ``start()`` and the preview API consume this dict to prevent
+        drift between what operators see and what actually runs.
 
         Args:
             resolved: Fully resolved deployment configuration.
             port: Host port to bind to container port.
 
         Returns:
-            ``DeploymentInfo`` describing the running container.
-
-        Raises:
-            RuntimeError: If the container fails to start.
+            A ``LaunchSpec`` dict with all launch configuration fields.
         """
-        # Validate merged runtime args as typed VLLM config for CLI building
         runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
         cli_args = self._build_cli_args(runtime)
 
@@ -196,8 +232,12 @@ class VLLMAdapter(BackendAdapter):
             + cli_args
         )
 
-        # Start with container environment from resolved deployment
+        # Container environment
         environment: dict[str, str] = dict(resolved.container_environment)
+        # hf_token renders to BOTH CLI (--hf-token via _build_cli_args) and
+        # container env (HF_TOKEN). This is intentional: vLLM reads from both
+        # paths. Do not remove one path thinking it's dead code.
+        # See SEP-004-05-CONTEXT-runtime-field-audit.md, Observation #2.
         if runtime.hf_token:
             environment["HF_TOKEN"] = runtime.hf_token
 
@@ -211,55 +251,31 @@ class VLLMAdapter(BackendAdapter):
             "switchyard.host": resolved.host_name,
         }
 
-        kwargs: dict[str, Any] = {
-            "image": resolved.image,
-            "ports": {internal_port: port},
-            "command": command,
-            "remove": False,
-        }
-        if resolved.docker_network:
-            kwargs["network"] = resolved.docker_network
-        if environment:
-            kwargs["environment"] = environment
-
         # Merge container options after translating config keys to Docker SDK kwargs.
-        for opt_key, opt_value in _normalize_container_options(
+        container_options = _normalize_container_options(
             resolved.container_options
-        ).items():
-            if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
-                kwargs[opt_key].update(opt_value)
-            else:
-                kwargs[opt_key] = opt_value
+        )
 
         # Force-apply Switchyard ownership labels after user container_options merge.
         # User labels (if any) are preserved; Switchyard labels always take precedence.
-        user_labels = kwargs.get("labels", {})
-        kwargs["labels"] = {**user_labels, **_switchyard_labels}
-
-        # Mount all host stores (models, hf_cache, …)
-        # Uses store_mounts from resolved deployment.
-        kwargs["volumes"] = resolved.store_mounts
-
-        # Explicit container name for human readability.
-        # Labels remain the authoritative ownership mechanism.
-        kwargs["name"] = f"switchyard-{resolved.deployment_name}"
+        user_labels = container_options.pop("labels", {})
+        labels = {**user_labels, **_switchyard_labels}
 
         # Device-specific configuration
         runtime_device = runtime.device or "cuda"
+        device_requests: list[DeviceRequest] | None = None
         if runtime_device == "cuda":
-            # GPU: request specific accelerators if placement is set,
-            # otherwise request all available
             if resolved.accelerator_ids:
-                kwargs["device_requests"] = [
-                    docker.types.DeviceRequest(
+                device_requests = [
+                    DeviceRequest(
                         driver="nvidia",
                         device_ids=resolved.accelerator_ids,
                         capabilities=[["gpu"]],
                     )
                 ]
             else:
-                kwargs["device_requests"] = [
-                    docker.types.DeviceRequest(
+                device_requests = [
+                    DeviceRequest(
                         driver="nvidia",
                         count=-1,
                         capabilities=[["gpu"]],
@@ -269,13 +285,73 @@ class VLLMAdapter(BackendAdapter):
             # CPU: set vLLM CPU-specific environment variables
             environment.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
             environment.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
-            kwargs["environment"] = environment
+
+        return LaunchSpec(
+            image=resolved.image,
+            command=command,
+            environment=environment,
+            ports={internal_port: port},
+            labels=labels,
+            volumes=resolved.store_mounts,
+            name=f"switchyard-{resolved.deployment_name}",
+            network=resolved.docker_network or None,
+            device_requests=device_requests,
+            container_options=container_options,
+            served_model_name=runtime.served_model_name
+            or runtime.model
+            or runtime.repo
+            or resolved.deployment_name,
+        )
+
+    def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
+        """Start a vLLM container.
+
+        Builds the launch spec via ``build_launch_spec()`` and passes it to
+        Docker SDK via ``containers.run()``.
+
+        Args:
+            resolved: Fully resolved deployment configuration.
+            port: Host port to bind to container port.
+
+        Returns:
+            ``DeploymentInfo`` describing the running container.
+
+        Raises:
+            RuntimeError: If the container fails to start.
+        """
+        spec = self.build_launch_spec(resolved, port)
+
+        # Build Docker SDK kwargs from the launch spec.
+        # ``remove: False`` is a Docker SDK lifecycle option (not auto-remove on
+        # stop), not a launch configuration concern — stays in start() only.
+        kwargs: dict[str, Any] = {
+            "image": spec["image"],
+            "command": spec["command"],
+            "ports": spec["ports"],
+            "labels": spec["labels"],
+            "volumes": spec["volumes"],
+            "name": spec["name"],
+            "remove": False,
+        }
+        if spec["network"]:
+            kwargs["network"] = spec["network"]
+        if spec["environment"]:
+            kwargs["environment"] = spec["environment"]
+        if spec["device_requests"] is not None:
+            kwargs["device_requests"] = spec["device_requests"]
+
+        # Merge container options (Docker SDK kwargs) after launch spec.
+        for opt_key, opt_value in spec["container_options"].items():
+            if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
+                kwargs[opt_key].update(opt_value)
+            else:
+                kwargs[opt_key] = opt_value
 
         logger.info(
             "starting vllm container image=%s port=%d args=%s",
-            resolved.image,
+            spec["image"],
             port,
-            cli_args,
+            spec["command"][4:],  # skip --host/--port prefix for log clarity
         )
 
         # Use resolved.docker_host for Docker client if not injected.
@@ -305,12 +381,7 @@ class VLLMAdapter(BackendAdapter):
             metadata={
                 "backend_host": self._backend_host,
                 "backend_scheme": self._backend_scheme,
-                "served_model_name": (
-                    runtime.served_model_name
-                    or runtime.model
-                    or runtime.repo
-                    or resolved.deployment_name
-                ),
+                "served_model_name": spec["served_model_name"],
             },
         )
 

@@ -61,9 +61,9 @@ class TestVLLMAdapter:
             },
         })
         args = adapter._build_cli_args(runtime)
-        assert "--some_unknown_flag" in args
+        assert "--some-unknown-flag" in args
         assert "value1" in args
-        assert "--another_flag" in args
+        assert "--another-flag" in args
         assert "true" in args
 
     def test_build_cli_args_empty_extra(self, adapter: VLLMAdapter) -> None:

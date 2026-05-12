@@ -140,6 +140,14 @@ def resolve_deployment(
     # The adapter's _build_cli_args reads runtime.model for --model flag.
     runtime_args["model"] = container_path
 
+    # Validate merged runtime args as typed config.
+    # This catches typos in any cascade layer before any Docker call.
+    # Only vLLM has a typed config model today; other backends skip this.
+    if runtime_cfg.backend == "vllm":
+        from switchyard.config.models import VLLMRuntimeConfig
+
+        VLLMRuntimeConfig.model_validate(runtime_args)
+
     # 4. Resolve all host store mounts for volume mapping
     store_mounts = _resolve_all_stores(host_cfg)
 

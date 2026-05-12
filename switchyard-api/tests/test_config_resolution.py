@@ -869,6 +869,138 @@ class TestRuntimeCascade:
         assert "weird-value" in args
         assert "--boolean-flag" in args
 
+    def test_typo_in_runtime_defaults_raises_at_resolve(self, tmp_path: Path) -> None:
+        """Unknown key in runtime.defaults raises ValidationError at resolve time."""
+        from pydantic import ValidationError
+
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  max_seqs: 10
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValidationError):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_model_defaults_raises_at_resolve(self, tmp_path: Path) -> None:
+        """Unknown key in model.defaults raises ValidationError at resolve time."""
+        from pydantic import ValidationError
+
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+                defaults:
+                  tensor_parallel_sizes: 2
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValidationError):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_model_runtime_defaults_raises_at_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        """Unknown key in model.runtime_defaults raises at resolve time."""
+        from pydantic import ValidationError
+
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+                runtime_defaults:
+                  max_model_lens: 4096
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValidationError):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_deployment_runtime_overrides_raises_at_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        """Unknown key in deployment.runtime_overrides raises at resolve time."""
+        from pydantic import ValidationError
+
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  gpu_memory_utilizations: 0.9
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValidationError):
+            resolve_deployment(config, "d1")
+
 
 # ---------------------------------------------------------------------------
 # T2.5 — Container cascade merge
