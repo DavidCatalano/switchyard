@@ -12,10 +12,7 @@
 - 2026-05-11 — Created field audit (`SEP-004-05-CONTEXT-runtime-field-audit.md`) classifying all 40 `VLLMRuntimeConfig` fields as CLI-rendering, Switchyard-only, or dual-purpose. Identified hardening gaps: no `extra: "forbid"`, shallow cascade merge, `extra_args` serialization bugs, fragile `device` skip.
 - 2026-05-12 — Drafted PRD (3 phases: schema hardening, cascade contract, preview API). Drafted PLAN (14 tasks across 3 phases). Incorporated Codex review: import cycle fix (`_deep_merge` extraction), explicit validation at resolve time, adapter-owned `build_launch_spec()`, list-aware redactor, 8 agreed contract decisions.
 - 2026-05-12 — Phase 1 complete (A1–A7). Added `extra: "forbid"` to `VLLMRuntimeConfig`, explicit `model_validate()` in `resolve_deployment()`, structural `switchyard_only` skip for `device`, `extra_args` JSON serialization + kebab-case normalization, `hf_token` dual-rendering comment, and `build_launch_spec()` extraction with `LaunchSpec` TypedDict. 351 tests pass, ruff/mypy clean. One existing test in `test_vllm_adapter.py` updated for kebab-case normalization.
-- 2026-05-12 — Post-Phase 1 review fixes:
-  - Finding 1: Fixed container_options merge order in `start()` — user options layer 1, Switchyard-owned layer 2 (always win). Added regression test.
-  - Finding 2: Added `_resolve_deployment()` wrapper for all API routes. `ValidationError` → HTTP 400 with field detail. 2 new API integration tests.
-  - Finding 3: Split `LaunchSpec` (Docker SDK) from `PreviewSpec` (JSON-serializable). Added `build_preview_spec()` method.
+
 
 ---
 

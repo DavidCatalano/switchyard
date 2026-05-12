@@ -233,8 +233,9 @@ class VLLMAdapter(BackendAdapter):
         """Build the full structured container launch specification.
 
         This is the single authoritative source for what gets launched.
-        Both ``start()`` and the preview API consume this dict to prevent
-        drift between what operators see and what actually runs.
+        Both ``start()`` consumes this dict for Docker SDK ``containers.run()``.
+        For preview API responses, use ``build_preview_spec()`` instead
+        (which returns a JSON-serializable dict without Docker SDK types).
 
         Args:
             resolved: Fully resolved deployment configuration.
