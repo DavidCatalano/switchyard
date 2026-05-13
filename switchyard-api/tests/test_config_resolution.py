@@ -1013,6 +1013,147 @@ class TestRuntimeCascade:
         resolved = resolve_deployment(config, "d1")
         assert "speculative_config" not in resolved.runtime_args
 
+    def test_nested_none_in_speculative_config_survives(
+        self, tmp_path: Path,
+    ) -> None:
+        """None values inside speculative_config pass through untouched —
+        Switchyard does not validate backend-specific nested keys."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  speculative_config:
+                    method: qwen3_next_mtp
+                    num_speculative_tokens: 2
+                    draft_tensor: null
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        sc = resolved.runtime_args["speculative_config"]
+        assert sc["method"] == "qwen3_next_mtp"
+        assert sc["draft_tensor"] is None
+
+    def test_limit_mm_per_prompt_null_is_idempotent_wipe(
+        self, tmp_path: Path,
+    ) -> None:
+        """null for limit_mm_per_prompt is an idempotent wipe — removes
+        the block if it exists, silently ignored if not."""
+        # With a lower layer providing the dict, null wipes it.
+        content_wipe = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  limit_mm_per_prompt:
+                    image: 4
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  limit_mm_per_prompt: null
+        """)
+        path_wipe = _write_config(tmp_path, content_wipe)
+        config_wipe = ConfigLoader.load_entity_config(path_wipe)
+        resolved_wipe = resolve_deployment(config_wipe, "d1")
+        assert "limit_mm_per_prompt" not in resolved_wipe.runtime_args
+
+        # Without a lower layer, null is a silent no-op.
+        content_noop = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  limit_mm_per_prompt: null
+        """)
+        path_noop = _write_config(tmp_path, content_noop)
+        config_noop = ConfigLoader.load_entity_config(path_noop)
+        resolved_noop = resolve_deployment(config_noop, "d1")
+        assert "limit_mm_per_prompt" not in resolved_noop.runtime_args
+
+    def test_non_dict_inherited_extra_args_discarded_gracefully(
+        self, tmp_path: Path,
+    ) -> None:
+        """If an upper typed layer accidentally sets extra_args to a non-dict
+        value (e.g. true), and deployment.extra_args also has entries, the
+        inherited value is silently reset and only deployment.extra_args
+        survives."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  extra_args: true
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  deployment-flag: value
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.runtime_args["extra_args"] == {"deployment-flag": "value"}
+
     def test_extra_args_in_upper_layers_deep_merge(
         self, tmp_path: Path,
     ) -> None:
