@@ -15,6 +15,16 @@
 - 2026-05-12 — Phase 2 complete (B1–B3). Extracted `_deep_merge` to `switchyard/core/merge.py`, replacing shallow `dict.update` in `_merge_runtime_args()`. Added null-as-wipe for nested dicts, rejected scalar nulls. Deep-merge `extra_args` from all layers including `deployment.extra_args`. Provenance tracking: `_merge_runtime_args()` returns `(merged, provenance)` map; `resolve_deployment()` enriches `ValidationError` into `ValueError` naming the source layer. 360 tests pass, ruff/mypy clean. Updated `_resolve_deployment()` in `app.py` to catch both `PydanticValidationError` and `ValueError`.
 - 2026-05-12 — Phase 3 complete (C1–C4). Added `GET /api/deployments/{deployment}/preview` route. `build_preview_spec()` extended with `port_range`, `container_options` (normalized Docker SDK keys), `deployment_status`, `container_status`, `docker_error`. Added `_redact_command_list()` for flag/value pair redaction in CLI command lists. Fixed `_mask_sensitive_args` to do case-insensitive matching (caught `HF_TOKEN`). Excluded `SWITCHYARD_*` env vars from preview. Live smoke test in `tests/live/test_preview.py`. 374 tests pass, ruff/mypy clean.
 
+- 2026-05-12 — Post-Phase 3 review fixes:
+  - **Finding 1**: Preview showed `container_options` values that `start()` overwrites. Now strips `_CONTAINER_OWNED_KEYS` from preview container_options.
+  - **Finding 2**: Preview labels excluded user labels. Now merges user + Switchyard labels, matching `build_launch_spec()`.
+  - **Finding 3**: `_redact_command_list()` not case-insensitive. Added `.lower()` to normalized flag matching.
+  - **Finding 4**: `_redact_command_list()` redacted next token even if it was a flag. Added `not args[i+1].startswith("-")` guard.
+  - **Finding 5** (PLAN): Literal `\n` in Phase 3 decision log. Split into actual newlines.
+  - **Finding 6** (PRD Risk 4): Env/device logic duplicated across `build_launch_spec` and `build_preview_spec`. Extracted `_compute_common_launch_fields()` shared helper.
+  - **Docker unavailability**: `get_docker_client()` now catches `DockerException` and raises clean `ConnectionError`. `reconcile()` catches `ConnectionError` without logging full traceback. Live tests pass cleanly with Docker tunnel down.
+  - Live smoke test (4 tests) passes with Docker tunnel connected. All 379 unit + live tests green.
+
 
 ---
 

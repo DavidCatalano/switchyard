@@ -2,7 +2,7 @@
 
 **Title**: vLLM Runtime Resolver Hardening
 **ID**: SEP-004-02-PLAN-vllm-runtime-resolver-hardening
-**Status**: Draft
+**Status**: Complete
 **Date**: 2026-05-11
 **PRD**: `SEP-004-01-PRD-vllm-runtime-resolver-hardening.md`
 
@@ -145,15 +145,15 @@ Key existing code to work from:
 **Validation Commands**: See `AGENTS.md` Section "Quality Gates" for complete validation command list.
 
 ### Success Criteria Validation
-- [ ] Unknown top-level key in any cascade layer raises `ValidationError` with source layer name in error message (PRD Done criterion 1 + Risk 5)
-- [ ] `device` excluded from CLI args by field metadata, not string matching (PRD Done criterion 2)
-- [ ] Partial nested dict override retains lower-layer keys (PRD Done criterion 3)
-- [ ] `extra_args` dict values render as valid JSON; keys render as kebab-case (PRD Done criterion 4)
-- [ ] Preview endpoint returns complete container spec matching `start()` launch config (PRD Done criterion 5)
-- [ ] Sensitive fields (`hf_token`, `api_key`) redacted in preview response
-- [ ] All quality gates pass: `uv run pytest`, `uv run ruff check`, `uv run mypy`
-- [ ] CPU smoke test (tinyllama) and GPU smoke test (qwen3.6-27b-fp8) pass through hardened resolver in `tests/live/`
-- [ ] No regressions in existing functionality
+- [x] Unknown top-level key in any cascade layer raises `ValidationError` with source layer name in error message (PRD Done criterion 1 + Risk 5)
+- [x] `device` excluded from CLI args by field metadata, not string matching (PRD Done criterion 2)
+- [x] Partial nested dict override retains lower-layer keys (PRD Done criterion 3)
+- [x] `extra_args` dict values render as valid JSON; keys render as kebab-case (PRD Done criterion 4)
+- [x] Preview endpoint returns complete container spec matching `start()` launch config (PRD Done criterion 5)
+- [x] Sensitive fields (`hf_token`, `api_key`) redacted in preview response
+- [x] All quality gates pass: `uv run pytest` (379), `uv run ruff check` (clean), `uv run mypy` (clean)
+- [ ] CPU smoke test (tinyllama) and GPU smoke test (qwen3.6-27b-fp8) pass through hardened resolver in `tests/live/` — **deferred to post-merge** (requires Docker tunnel + backend container running)
+- [x] No regressions in existing functionality (374 unit tests pass)
 
 ---
 
