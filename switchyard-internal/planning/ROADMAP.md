@@ -117,7 +117,7 @@ Expose read and diagnostic API surfaces over the object model: list/detail
 views, validation, dry-run, logs, active model/deployment visibility, and host
 resource details where manually configured data is sufficient.
 
-Planning reference: `epic-api-object-management.md`
+Planning reference: `SEP-005-04-CONTEXT-api-object-management.md`
 
 ### SEP-006 — Config Write APIs
 
