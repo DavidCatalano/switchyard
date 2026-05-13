@@ -406,6 +406,8 @@ class VLLMRuntimeConfig(BaseModel):
     argument categories for readability.
     """
 
+    model_config = {"extra": "forbid"}
+
     # --- Model & Tokenizer (ModelConfig) ---
     # Essential model identity: local path OR HuggingFace repo ID.
     # In the SEP-002 entity model, the model path comes from store
@@ -416,7 +418,12 @@ class VLLMRuntimeConfig(BaseModel):
     # --- Device ---
     # "cuda" (default) → GPU image, device_requests, gpu_memory_utilization
     # "cpu" → CPU image, no GPU devices, VLLM_CPU_* env vars
-    device: Literal["cpu", "cuda"] = "cuda"
+    # Marked switchyard_only: shapes container/device/env config but never
+    # renders to vLLM CLI (SEP-004).
+    device: Literal["cpu", "cuda"] = Field(
+        default="cuda",
+        json_schema_extra={"switchyard_only": True},
+    )
 
     # Core model parameters
     max_model_len: int | None = None

@@ -46,13 +46,21 @@ def get_docker_client(docker_host: str | None = None) -> docker.DockerClient:
 
     Returns:
         A configured ``docker.DockerClient`` instance.
+
+    Raises:
+        ConnectionError: If the Docker daemon is unreachable.
     """
-    if docker_host is not None:
-        return docker.DockerClient(base_url=docker_host)
-    settings = AppSettings()
-    if settings.docker_host is not None:
-        return docker.DockerClient(base_url=settings.docker_host)
-    return docker.from_env()
+    try:
+        if docker_host is not None:
+            return docker.DockerClient(base_url=docker_host)
+        settings = AppSettings()
+        if settings.docker_host is not None:
+            return docker.DockerClient(base_url=settings.docker_host)
+        return docker.from_env()
+    except docker.errors.DockerException as exc:
+        raise ConnectionError(
+            "Docker daemon is not reachable",
+        ) from exc
 
 
 def create_default_factory() -> DockerClientFactory:

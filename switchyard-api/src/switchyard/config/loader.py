@@ -19,6 +19,7 @@ from switchyard.config.models import (
     ResolvedDeployment,
     RuntimeConfig,
 )
+from switchyard.core.merge import deep_merge
 
 logger = logging.getLogger(__name__)
 
@@ -131,14 +132,46 @@ def resolve_deployment(
         host_cfg, deployment, model_cfg,
     )
 
-    # 3. Cascade-merge runtime args
+    # 3. Cascade-merge runtime args with provenance tracking.
     # Order: model defaults -> runtime defaults -> model runtime_defaults
     #        -> deployment runtime_overrides (extra_args nested separately)
-    runtime_args = _merge_runtime_args(runtime_cfg, model_cfg, deployment)
+    runtime_args, provenance = _merge_runtime_args(
+        runtime_cfg, model_cfg, deployment,
+    )
 
     # Inject resolved model path into runtime args.
     # The adapter's _build_cli_args reads runtime.model for --model flag.
     runtime_args["model"] = container_path
+
+    # Validate merged runtime args as typed config.
+    # This catches typos in any cascade layer before any Docker call.
+    # Only vLLM has a typed config model today; other backends skip this.
+    if runtime_cfg.backend == "vllm":
+        from pydantic import ValidationError
+
+        from switchyard.config.models import VLLMRuntimeConfig
+
+        try:
+            VLLMRuntimeConfig.model_validate(runtime_args)
+        except ValidationError as exc:
+            # Enrich the error with provenance so operators know which
+            # config layer introduced the unknown key.
+            details = []
+            for error in exc.errors():
+                loc = error.get("loc", ())
+                msg = error.get("msg", "validation error")
+                field = loc[0] if loc else ""
+                if field and field in provenance:
+                    layer = provenance[field]
+                    details.append(
+                        f"{msg} for field {field!r} in {layer}"
+                    )
+                else:
+                    details.append(f"{msg} for field {field!r}")
+            raise ValueError(
+                "config validation error(s): "
+                + "; ".join(details)
+            ) from exc
 
     # 4. Resolve all host store mounts for volume mapping
     store_mounts = _resolve_all_stores(host_cfg)
@@ -250,25 +283,36 @@ def _merge_runtime_args(
     runtime_cfg: RuntimeConfig,
     model_cfg: ModelConfig,
     deployment: DeploymentConfig,
-) -> dict[str, Any]:
-    """Merge runtime args in cascade order.
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Merge runtime args in cascade order using deep merge.
 
     Typed layers (1–4) merge as top-level fields in the returned dict.
-    deployment.extra_args is nested under "extra_args" to preserve the
-    escape hatch: VLLMRuntimeConfig.model_validate() reads
-    runtime_args["extra_args"] as its catch-all, so unknown keys are not
-    silently dropped.
+    `extra_args` can appear in any typed layer and is deep-merged
+    naturally. `deployment.extra_args` is deep-merged on top last.
 
-    Order (later wins on conflict for typed layers):
+    Cascade order (later wins on conflict for typed layers):
       1. Model defaults (served_model_name, reasoning_parser, etc.)
       2. Runtime defaults
       3. Model runtime_defaults
       4. Deployment runtime_overrides
+      5. Deployment extra_args (escape hatch, deep-merged over inherited)
+
+    Runtime-cascade null policy (applied before structural merge):
+      - Known nested-dict fields (speculative_config, limit_mm_per_prompt):
+        null is an idempotent wipe — removes the block if it exists,
+        silently ignored if there is nothing to wipe.
+      - All other top-level scalar null values are rejected with ValueError.
+      - None values inside nested dicts are preserved as-is; Switchyard
+        does not validate backend-specific nested keys.
+
+    Returns:
+        A tuple of (merged_runtime_args, provenance) where provenance maps
+        each top-level key to the layer name that last set it.
 
     Raises:
         ValueError: If ``health_timeout_seconds`` appears in any
-            runtime-arg layer. It is a first-class Switchyard field,
-            not a runtime flag.
+            runtime-arg layer, or if a scalar ``None``/``null`` appears
+            in any override layer.
     """
     _guard_health_timeout(
         model_cfg.defaults, "model.defaults",
@@ -286,21 +330,62 @@ def _merge_runtime_args(
         deployment.extra_args, "deployment.extra_args",
     )
 
+    # Track provenance: maps each top-level key to the source layer name.
+    provenance: dict[str, str] = {}
     merged: dict[str, Any] = {}
-    for layer in (
-        model_cfg.defaults or {},
-        runtime_cfg.defaults,
-        model_cfg.runtime_defaults,
-        deployment.runtime_overrides,
-    ):
-        merged.update(layer)
 
-    # Nested extra_args escape hatch: unknown keys survive resolution
-    # and appear as VLLMRuntimeConfig.extra_args at CLI-building time.
+    # Top-level fields known to be nested dicts. Null for these is an
+    # idempotent wipe (Helm/Kustomize semantics): removes the block if
+    # present, silently ignored if not. This avoids rejecting
+    # `speculative_config: null` when no lower layer provides one.
+    _KNOWN_NESTED_FIELDS = frozenset(
+        {"speculative_config", "limit_mm_per_prompt"},
+    )
+
+    layers: list[tuple[str, dict[str, Any]]] = [
+        ("model.defaults", model_cfg.defaults or {}),
+        ("runtime.defaults", runtime_cfg.defaults),
+        ("model.runtime_defaults", model_cfg.runtime_defaults),
+        ("deployment.runtime_overrides", deployment.runtime_overrides),
+    ]
+    for layer_name, layer in layers:
+        # Pre-process: apply null policy per key before structural merge.
+        #   - known nested-dict field + null → wipe (remove from merged)
+        #   - other field + null → reject with ValueError
+        #   - everything else → pass through to deep_merge
+        processed_layer: dict[str, Any] = {}
+        for key, value in layer.items():
+            if value is None:
+                if key in _KNOWN_NESTED_FIELDS:
+                    # Idempotent wipe: remove key if present, no-op otherwise.
+                    merged.pop(key, None)
+                    provenance.pop(key, None)
+                    continue  # don't pass None through to deep_merge
+                raise ValueError(
+                    f"null (None) for field {key!r} is not allowed in "
+                    f"{layer_name}; omit the key to inherit from lower "
+                    "layers, or set a real value."
+                )
+            processed_layer[key] = value
+
+        merged = deep_merge(merged, processed_layer)
+        for key in processed_layer:
+            provenance[key] = layer_name
+
+    # Deep-merge deployment.extra_args into the "extra_args" nested key.
+    # This preserves the escape hatch: unknown keys survive VLLMRuntimeConfig
+    # validation by landing in its extra_args catch-all field. Any inherited
+    # extra_args from lower typed layers are deep-merged with these.
     if deployment.extra_args:
-        merged["extra_args"] = dict(deployment.extra_args)
+        inherited = merged.get("extra_args")
+        # Defensive: upper layer may have accidentally set extra_args to a
+        # non-dict value (e.g. true). Treat as empty rather than crashing.
+        if not isinstance(inherited, dict):
+            inherited = {}
+        merged["extra_args"] = deep_merge(inherited, deployment.extra_args)
+        provenance["extra_args"] = "deployment.extra_args"
 
-    return merged
+    return merged, provenance
 
 
 def _guard_health_timeout(

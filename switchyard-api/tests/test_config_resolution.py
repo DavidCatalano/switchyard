@@ -869,6 +869,538 @@ class TestRuntimeCascade:
         assert "weird-value" in args
         assert "--boolean-flag" in args
 
+    def test_deep_merge_preserves_lower_layer_nested_keys(
+        self, tmp_path: Path,
+    ) -> None:
+        """Partial speculative_config override at deployment level retains
+        runtime-level keys (e.g. method)."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  speculative_config:
+                    method: qwen3_next_mtp
+                    num_speculative_tokens: 2
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  speculative_config:
+                    num_speculative_tokens: 5
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        sc = resolved.runtime_args["speculative_config"]
+        assert sc["method"] == "qwen3_next_mtp"  # retained from runtime.defaults
+        assert sc["num_speculative_tokens"] == 5  # overridden by deployment
+
+    def test_null_wipes_nested_dict(self, tmp_path: Path) -> None:
+        """setting speculative_config: null at deployment level wipes all
+        lower-layer entries."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  speculative_config:
+                    method: qwen3_next_mtp
+                    num_speculative_tokens: 2
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  speculative_config: null
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert "speculative_config" not in resolved.runtime_args
+
+    def test_scalar_null_is_rejected(self, tmp_path: Path) -> None:
+        """null for a top-level scalar field raises ValueError."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  dtype: auto
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  dtype: null
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="null.*dtype.*not allowed"):
+            resolve_deployment(config, "d1")
+
+    def test_null_wipe_idempotent_when_nothing_to_wipe(
+        self, tmp_path: Path,
+    ) -> None:
+        """null for a known nested field (speculative_config) is an idempotent
+        wipe — silently ignored when no lower layer provides the key."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  dtype: auto
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  speculative_config: null
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        # Should resolve without error — null on speculative_config is
+        # idempotent wipe (no-op when nothing to wipe).
+        resolved = resolve_deployment(config, "d1")
+        assert "speculative_config" not in resolved.runtime_args
+
+    def test_nested_none_in_speculative_config_survives(
+        self, tmp_path: Path,
+    ) -> None:
+        """None values inside speculative_config pass through untouched —
+        Switchyard does not validate backend-specific nested keys."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  speculative_config:
+                    method: qwen3_next_mtp
+                    num_speculative_tokens: 2
+                    draft_tensor: null
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        sc = resolved.runtime_args["speculative_config"]
+        assert sc["method"] == "qwen3_next_mtp"
+        assert sc["draft_tensor"] is None
+
+    def test_limit_mm_per_prompt_null_is_idempotent_wipe(
+        self, tmp_path: Path,
+    ) -> None:
+        """null for limit_mm_per_prompt is an idempotent wipe — removes
+        the block if it exists, silently ignored if not."""
+        # With a lower layer providing the dict, null wipes it.
+        content_wipe = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  limit_mm_per_prompt:
+                    image: 4
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  limit_mm_per_prompt: null
+        """)
+        path_wipe = _write_config(tmp_path, content_wipe)
+        config_wipe = ConfigLoader.load_entity_config(path_wipe)
+        resolved_wipe = resolve_deployment(config_wipe, "d1")
+        assert "limit_mm_per_prompt" not in resolved_wipe.runtime_args
+
+        # Without a lower layer, null is a silent no-op.
+        content_noop = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  limit_mm_per_prompt: null
+        """)
+        path_noop = _write_config(tmp_path, content_noop)
+        config_noop = ConfigLoader.load_entity_config(path_noop)
+        resolved_noop = resolve_deployment(config_noop, "d1")
+        assert "limit_mm_per_prompt" not in resolved_noop.runtime_args
+
+    def test_non_dict_inherited_extra_args_discarded_gracefully(
+        self, tmp_path: Path,
+    ) -> None:
+        """If an upper typed layer accidentally sets extra_args to a non-dict
+        value (e.g. true), and deployment.extra_args also has entries, the
+        inherited value is silently reset and only deployment.extra_args
+        survives."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  extra_args: true
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  deployment-flag: value
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        assert resolved.runtime_args["extra_args"] == {"deployment-flag": "value"}
+
+    def test_extra_args_in_upper_layers_deep_merge(
+        self, tmp_path: Path,
+    ) -> None:
+        """extra_args in runtime.defaults and deployment.extra_args are
+        deep-merged, with deployment layer winning conflicts."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  extra_args:
+                    runtime-flag-a: value-a
+                    shared-flag: runtime-value
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                extra_args:
+                  deployment-flag-b: value-b
+                  shared-flag: deployment-value
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        ea = resolved.runtime_args["extra_args"]
+        assert ea["runtime-flag-a"] == "value-a"  # inherited from runtime
+        assert ea["deployment-flag-b"] == "value-b"  # from deployment
+        assert ea["shared-flag"] == "deployment-value"  # deployment wins
+
+    def test_cascade_order_last_in_wins_top_level(
+        self, tmp_path: Path,
+    ) -> None:
+        """Verify cascade order: model.defaults -> runtime.defaults ->
+        model.runtime_defaults -> deployment.runtime_overrides."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  dtype: float16
+                  max_model_len: 4096
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+                defaults:
+                  dtype: bfloat16  # overridden by runtime
+                runtime_defaults:
+                  dtype: bfloat16  # wins over runtime, then overridden by deployment
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  dtype: float32  # final winner
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        resolved = resolve_deployment(config, "d1")
+        # dtype: bfloat16 (model.defaults) -> float16 (runtime) -> bfloat16
+        # (model.runtime_defaults) -> float32 (deployment)
+        assert resolved.runtime_args["dtype"] == "float32"
+        # max_model_len: only set at runtime level, no override
+        assert resolved.runtime_args["max_model_len"] == 4096
+
+    def test_typo_in_runtime_defaults_raises_at_resolve(self, tmp_path: Path) -> None:
+        """Unknown key in runtime.defaults raises ValueError at resolve time
+        with provenance naming the source layer."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+                defaults:
+                  max_seqs: 10
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="runtime.defaults"):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_model_defaults_raises_at_resolve(self, tmp_path: Path) -> None:
+        """Unknown key in model.defaults raises ValueError at resolve time
+        with provenance naming the source layer."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+                defaults:
+                  tensor_parallel_sizes: 2
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="model.defaults"):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_model_runtime_defaults_raises_at_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        """Unknown key in model.runtime_defaults raises ValueError at resolve
+        time with provenance naming the source layer."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+                runtime_defaults:
+                  max_model_lens: 4096
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="model.runtime_defaults"):
+            resolve_deployment(config, "d1")
+
+    def test_typo_in_deployment_runtime_overrides_raises_at_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        """Unknown key in deployment.runtime_overrides raises ValueError at
+        resolve time with provenance naming the source layer."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  gpu_memory_utilizations: 0.9
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(ValueError, match="deployment.runtime_overrides"):
+            resolve_deployment(config, "d1")
+
+    def test_typo_error_includes_provenance_layer(self, tmp_path: Path) -> None:
+        """ValidationError from unknown key is converted to ValueError
+        that names the source layer."""
+        content = dedent("""\
+            hosts:
+              laptop:
+                stores:
+                  models:
+                    host_path: /data/models
+                    container_path: /models
+            runtimes:
+              vllm:
+                backend: vllm
+            models:
+              m1:
+                source:
+                  store: models
+                  path: model
+            deployments:
+              d1:
+                model: m1
+                runtime: vllm
+                host: laptop
+                runtime_overrides:
+                  max_seqs: 10
+        """)
+        path = _write_config(tmp_path, content)
+        config = ConfigLoader.load_entity_config(path)
+        with pytest.raises(
+            ValueError, match="deployment.runtime_overrides",
+        ) as exc_info:
+            resolve_deployment(config, "d1")
+        assert "max_seqs" in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # T2.5 — Container cascade merge

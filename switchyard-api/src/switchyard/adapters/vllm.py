@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, TypedDict
 
 import docker
 import httpx
 from docker import DockerClient
+from docker.types import DeviceRequest
 
 from switchyard.config.models import (
     ResolvedDeployment,
@@ -63,6 +65,162 @@ def _normalize_container_options(options: dict[str, Any]) -> dict[str, Any]:
         ]
 
     return normalized
+
+
+# Keys that start() force-applies over user container_options, so the
+# preview should not show user-set values that would be silently discarded.
+_CONTAINER_OWNED_KEYS = frozenset(
+    {"labels", "name", "volumes", "ports", "command", "environment", "device_requests"},
+)
+
+
+@dataclass
+class _CommonLaunchFields:
+    """Fields shared by build_launch_spec and build_preview_spec.
+
+    Extracted so a single change updates both paths, mitigating PRD Risk 4
+    (preview drift).
+    """
+
+    runtime: VLLMRuntimeConfig
+    internal_port: int
+    command: list[str]
+    environment: dict[str, str]
+    labels: dict[str, str]
+    container_options: dict[str, Any]
+    served_model_name: str
+    device_type: str
+
+
+def _compute_common_launch_fields(resolved: ResolvedDeployment) -> _CommonLaunchFields:
+    """Compute fields shared by both launch and preview spec builders.
+
+    Validates runtime args, builds CLI args + command prefix, assembles
+    environment (with hf_token and CPU defaults), merges labels, and
+    normalizes container options.
+
+    Args:
+        resolved: Fully resolved deployment configuration.
+
+    Returns:
+        A ``_CommonLaunchFields`` namedtuple.
+    """
+    runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
+    internal_port = resolved.internal_port or _INTERNAL_PORT
+    device_type = runtime.device or "cuda"
+
+    # CLI command: --host/--port prefix + adapter-built args
+    command = (
+        ["--host", "0.0.0.0", "--port", str(internal_port)]
+        + VLLMAdapter._build_cli_args(runtime)
+    )
+
+    # Container environment
+    environment: dict[str, str] = dict(resolved.container_environment)
+    # hf_token renders to BOTH CLI and env. Intentional: vLLM reads from both.
+    # See SEP-004-05-CONTEXT-runtime-field-audit.md, Observation #2.
+    if runtime.hf_token:
+        environment["HF_TOKEN"] = runtime.hf_token
+    if device_type == "cpu":
+        environment.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
+        environment.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
+
+    # Container ownership labels
+    _switchyard_labels: dict[str, str] = {
+        "switchyard.managed": "true",
+        "switchyard.deployment": resolved.deployment_name,
+        "switchyard.model": resolved.model_name,
+        "switchyard.runtime": resolved.runtime_name,
+        "switchyard.host": resolved.host_name,
+    }
+
+    # Normalize container options
+    container_options = _normalize_container_options(resolved.container_options)
+
+    # Extract user labels before stripping owned keys
+    user_labels = container_options.pop("labels", {})
+
+    # Strip keys that start() force-applies (would silently discard user values)
+    for key in _CONTAINER_OWNED_KEYS:
+        container_options.pop(key, None)
+
+    # Merge user labels with Switchyard labels
+    labels = {**user_labels, **_switchyard_labels}
+
+    served_model_name = (
+        runtime.served_model_name or runtime.model
+        or runtime.repo or resolved.deployment_name
+    )
+
+    return _CommonLaunchFields(
+        runtime=runtime,
+        internal_port=internal_port,
+        command=command,
+        environment=environment,
+        labels=labels,
+        container_options=container_options,
+        served_model_name=served_model_name,
+        device_type=device_type,
+    )
+
+
+class LaunchSpec(TypedDict):
+    """Structured container launch specification.
+
+    Returned by ``VLLMAdapter.build_launch_spec()`` and consumed by
+    ``start()`` (for Docker SDK ``containers.run()``). Contains Docker SDK
+    types like ``DeviceRequest`` that are not JSON-serializable.
+
+    For preview API responses, use ``build_preview_spec()`` instead.
+    """
+
+    image: str
+    command: list[str]
+    environment: dict[str, str]
+    ports: dict[int, int]
+    labels: dict[str, str]
+    volumes: dict[str, dict[str, str]]
+    name: str
+    network: str | None
+    device_requests: list[DeviceRequest] | None
+    container_options: dict[str, Any]
+    served_model_name: str
+
+
+class PreviewSpec(TypedDict):
+    """Operator-facing container launch preview.
+
+    Returned by ``VLLMAdapter.build_preview_spec()`` for the preview API.
+    All fields are JSON-serializable and use Switchyard domain language
+    (accelerator_ids, device_type) instead of Docker SDK types.
+
+    Port semantics:
+        ``host_port`` is the actual bound port when a container exists
+        (loading / running / error) or ``None`` when stopped.
+        ``port_range`` provides host port allocation context regardless
+        of deployment status.
+
+    Status semantics:
+        ``deployment_status``, ``container_status``, and ``docker_error``
+        are resolved at the API route level and forwarded to this spec.
+    """
+
+    image: str
+    command: list[str]
+    environment: dict[str, str]
+    ports: dict[int, int]
+    labels: dict[str, str]
+    mounts: dict[str, dict[str, str]]
+    network: str | None
+    host_port: int | None
+    port_range: list[int]
+    container_options: dict[str, Any]
+    accelerator_ids: list[str]
+    device_type: str
+    served_model_name: str
+    deployment_status: str
+    container_status: str
+    docker_error: str | None
 
 
 class VLLMAdapter(BackendAdapter):
@@ -137,10 +295,21 @@ class VLLMAdapter(BackendAdapter):
         if model_source:
             args.extend(["--model", model_source])
 
+        # Derive switchyard-only fields from Pydantic model metadata.
+        # These fields shape container construction but must never reach CLI.
+        _switchyard_only = {
+            name
+            for name, fi in VLLMRuntimeConfig.model_fields.items()
+            if isinstance(fi.json_schema_extra, dict)
+            and fi.json_schema_extra.get("switchyard_only")
+        }
+
         # Iterate over all known named fields (excluding model/repo handled above,
-        # and extra_args handled below)
+        # extra_args handled below, and switchyard-only fields)
         for field_name, value in runtime.model_dump().items():
-            if field_name in ("model", "repo", "extra_args", "device"):
+            if field_name in ("model", "repo", "extra_args"):
+                continue
+            if field_name in _switchyard_only:
                 continue
             if value is None:
                 continue
@@ -157,22 +326,129 @@ class VLLMAdapter(BackendAdapter):
             else:
                 args.extend([flag, str(value)])
 
-        # extra_args passthrough (verbatim key → --key value)
+        # extra_args passthrough: normalize keys through snake→kebab conversion
+        # and JSON-serialize dict values (matching named dict fields).
         for key, value in runtime.extra_args.items():
-            flag = f"--{key}"
+            flag = _field_to_flag(key)
             if isinstance(value, bool):
                 if value:
                     args.append(flag)
+            elif isinstance(value, dict):
+                args.extend([flag, json.dumps(value)])
             else:
                 args.extend([flag, str(value)])
 
         return args
 
+    def build_launch_spec(
+        self, resolved: ResolvedDeployment, port: int,
+    ) -> LaunchSpec:
+        """Build the full structured container launch specification.
+
+        This is the single authoritative source for what gets launched.
+        Both ``start()`` consumes this dict for Docker SDK ``containers.run()``.
+        For preview API responses, use ``build_preview_spec()`` instead
+        (which returns a JSON-serializable dict without Docker SDK types).
+
+        Args:
+            resolved: Fully resolved deployment configuration.
+            port: Host port to bind to container port.
+
+        Returns:
+            A ``LaunchSpec`` dict with all launch configuration fields.
+        """
+        common = _compute_common_launch_fields(resolved)
+
+        # Device-specific configuration
+        device_requests: list[DeviceRequest] | None = None
+        if common.device_type == "cuda":
+            if resolved.accelerator_ids:
+                device_requests = [
+                    DeviceRequest(
+                        driver="nvidia",
+                        device_ids=resolved.accelerator_ids,
+                        capabilities=[["gpu"]],
+                    )
+                ]
+            else:
+                device_requests = [
+                    DeviceRequest(
+                        driver="nvidia",
+                        count=-1,
+                        capabilities=[["gpu"]],
+                    )
+                ]
+
+        return LaunchSpec(
+            image=resolved.image,
+            command=common.command,
+            environment=common.environment,
+            ports={common.internal_port: port},
+            labels=common.labels,
+            volumes=resolved.store_mounts,
+            name=f"switchyard-{resolved.deployment_name}",
+            network=resolved.docker_network or None,
+            device_requests=device_requests,
+            container_options=common.container_options,
+            served_model_name=common.served_model_name,
+        )
+
+    def build_preview_spec(
+        self,
+        resolved: ResolvedDeployment,
+        *,
+        host_port: int | None = None,
+        port_range: list[int] | None = None,
+        deployment_status: str = "stopped",
+        container_status: str = "missing",
+        docker_error: str | None = None,
+    ) -> PreviewSpec:
+        """Build an operator-facing container launch preview.
+
+        Unlike ``build_launch_spec()``, this returns a JSON-serializable
+        dict using Switchyard domain language (accelerator_ids, device_type)
+        instead of Docker SDK types (DeviceRequest).
+
+        Args:
+            resolved: Fully resolved deployment configuration.
+            host_port: Actual host port if deployment has a running container,
+                ``None`` when stopped.
+            port_range: Host port allocation range for context.
+            deployment_status: Current Switchyard status
+                (loading / running / error / stopped).
+            container_status: Docker container observation
+                (running / exited / missing / unknown).
+            docker_error: Error message if Docker was unreachable.
+
+        Returns:
+            A ``PreviewSpec`` dict with all preview configuration fields.
+        """
+        common = _compute_common_launch_fields(resolved)
+
+        return PreviewSpec(
+            image=resolved.image,
+            command=common.command,
+            environment=common.environment,
+            ports={common.internal_port: host_port} if host_port is not None else {},
+            labels=common.labels,
+            mounts=resolved.store_mounts,
+            network=resolved.docker_network or None,
+            host_port=host_port,
+            port_range=port_range or resolved.port_range,
+            container_options=common.container_options,
+            accelerator_ids=resolved.accelerator_ids,
+            device_type=common.device_type,
+            deployment_status=deployment_status,
+            container_status=container_status,
+            docker_error=docker_error,
+            served_model_name=common.served_model_name,
+        )
+
     def start(self, resolved: ResolvedDeployment, port: int) -> DeploymentInfo:
         """Start a vLLM container.
 
-        Builds CLI flags from the resolved deployment config, launches the
-        container via Docker SDK with port binding and resource limits.
+        Builds the launch spec via ``build_launch_spec()`` and passes it to
+        Docker SDK via ``containers.run()``.
 
         Args:
             resolved: Fully resolved deployment configuration.
@@ -184,98 +460,40 @@ class VLLMAdapter(BackendAdapter):
         Raises:
             RuntimeError: If the container fails to start.
         """
-        # Validate merged runtime args as typed VLLM config for CLI building
-        runtime = VLLMRuntimeConfig.model_validate(resolved.runtime_args)
-        cli_args = self._build_cli_args(runtime)
+        spec = self.build_launch_spec(resolved, port)
 
-        # Use resolved internal port (or fall back to default)
-        internal_port = resolved.internal_port or _INTERNAL_PORT
+        # Apply user container options first, then force-apply Switchyard-owned
+        # fields on top. This prevents user options from overriding managed
+        # fields like name, volumes, labels, and device_requests.
+        kwargs: dict[str, Any] = {}
 
-        command = (
-            ["--host", "0.0.0.0", "--port", str(internal_port)]
-            + cli_args
-        )
-
-        # Start with container environment from resolved deployment
-        environment: dict[str, str] = dict(resolved.container_environment)
-        if runtime.hf_token:
-            environment["HF_TOKEN"] = runtime.hf_token
-
-        # Container ownership labels — identify Switchyard-managed containers.
-        # Defined here so they can be force-applied after user container_options merge.
-        _switchyard_labels: dict[str, str] = {
-            "switchyard.managed": "true",
-            "switchyard.deployment": resolved.deployment_name,
-            "switchyard.model": resolved.model_name,
-            "switchyard.runtime": resolved.runtime_name,
-            "switchyard.host": resolved.host_name,
-        }
-
-        kwargs: dict[str, Any] = {
-            "image": resolved.image,
-            "ports": {internal_port: port},
-            "command": command,
-            "remove": False,
-        }
-        if resolved.docker_network:
-            kwargs["network"] = resolved.docker_network
-        if environment:
-            kwargs["environment"] = environment
-
-        # Merge container options after translating config keys to Docker SDK kwargs.
-        for opt_key, opt_value in _normalize_container_options(
-            resolved.container_options
-        ).items():
+        # Layer 1: user container options (Docker SDK kwargs)
+        for opt_key, opt_value in spec["container_options"].items():
             if opt_key in kwargs and isinstance(kwargs[opt_key], dict):
                 kwargs[opt_key].update(opt_value)
             else:
                 kwargs[opt_key] = opt_value
 
-        # Force-apply Switchyard ownership labels after user container_options merge.
-        # User labels (if any) are preserved; Switchyard labels always take precedence.
-        user_labels = kwargs.get("labels", {})
-        kwargs["labels"] = {**user_labels, **_switchyard_labels}
-
-        # Mount all host stores (models, hf_cache, …)
-        # Uses store_mounts from resolved deployment.
-        kwargs["volumes"] = resolved.store_mounts
-
-        # Explicit container name for human readability.
-        # Labels remain the authoritative ownership mechanism.
-        kwargs["name"] = f"switchyard-{resolved.deployment_name}"
-
-        # Device-specific configuration
-        runtime_device = runtime.device or "cuda"
-        if runtime_device == "cuda":
-            # GPU: request specific accelerators if placement is set,
-            # otherwise request all available
-            if resolved.accelerator_ids:
-                kwargs["device_requests"] = [
-                    docker.types.DeviceRequest(
-                        driver="nvidia",
-                        device_ids=resolved.accelerator_ids,
-                        capabilities=[["gpu"]],
-                    )
-                ]
-            else:
-                kwargs["device_requests"] = [
-                    docker.types.DeviceRequest(
-                        driver="nvidia",
-                        count=-1,
-                        capabilities=[["gpu"]],
-                    )
-                ]
-        else:
-            # CPU: set vLLM CPU-specific environment variables
-            environment.setdefault("VLLM_CPU_KVCACHE_SPACE", "4")
-            environment.setdefault("VLLM_CPU_NUM_OF_RESERVED_CPU", "1")
-            kwargs["environment"] = environment
+        # Layer 2: Switchyard-owned fields (always take precedence)
+        kwargs["image"] = spec["image"]
+        kwargs["command"] = spec["command"]
+        kwargs["ports"] = spec["ports"]
+        kwargs["labels"] = spec["labels"]
+        kwargs["volumes"] = spec["volumes"]
+        kwargs["name"] = spec["name"]
+        kwargs["remove"] = False
+        if spec["network"]:
+            kwargs["network"] = spec["network"]
+        if spec["environment"]:
+            kwargs["environment"] = spec["environment"]
+        if spec["device_requests"] is not None:
+            kwargs["device_requests"] = spec["device_requests"]
 
         logger.info(
             "starting vllm container image=%s port=%d args=%s",
-            resolved.image,
+            spec["image"],
             port,
-            cli_args,
+            spec["command"][4:],  # skip --host/--port prefix for log clarity
         )
 
         # Use resolved.docker_host for Docker client if not injected.
@@ -305,12 +523,7 @@ class VLLMAdapter(BackendAdapter):
             metadata={
                 "backend_host": self._backend_host,
                 "backend_scheme": self._backend_scheme,
-                "served_model_name": (
-                    runtime.served_model_name
-                    or runtime.model
-                    or runtime.repo
-                    or resolved.deployment_name
-                ),
+                "served_model_name": spec["served_model_name"],
             },
         )
 

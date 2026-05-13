@@ -17,11 +17,13 @@ import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError as PydanticValidationError
 
 from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader, resolve_deployment
 from switchyard.config.models import AppSettings, Config
 from switchyard.core.lifecycle import LifecycleManager
+from switchyard.core.merge import deep_merge
 from switchyard.core.ports import PortAllocator
 from switchyard.logging import RequestContextMiddleware, configure_logging
 
@@ -36,6 +38,55 @@ async def _validation_handler(
         status_code=400,
         content={"detail": exc.errors()[0].get("msg", "invalid request")},
     )
+
+
+async def _resolver_handler(
+    request: Request, exc: PydanticValidationError,
+) -> JSONResponse:
+    """Handle ValidationError from config resolution.
+
+    When resolve_deployment() validates merged runtime args through
+    VLLMRuntimeConfig, any typos surface as ValidationError. This handler
+    catches them and returns a structured 400 instead of a 500.
+    """
+    errors = exc.errors()
+    if errors:
+        first = errors[0]
+        loc = " ".join(str(p) for p in first.get("loc", []))
+        msg = first.get("msg", "config validation error")
+        detail = f"{msg} (field: {loc})" if loc else msg
+    else:
+        detail = "config validation error"
+    return JSONResponse(
+        status_code=400,
+        content={"detail": detail},
+    )
+
+
+def _resolve_deployment(
+    config: Config,
+    deployment: str,
+) -> Any:
+    """Resolve deployment, converting resolution errors to HTTP 400.
+
+    Wraps ``resolve_deployment()`` so that Pydantic validation errors
+    from runtime config typos and ``ValueError`` from merge issues
+    surface as clear 400 responses rather than 500 errors.
+    """
+    try:
+        return resolve_deployment(config, deployment)
+    except PydanticValidationError as exc:
+        errors = exc.errors()
+        if errors:
+            first = errors[0]
+            loc = " ".join(str(p) for p in first.get("loc", []))
+            msg = first.get("msg", "config validation error")
+            detail = f"{msg} (field: {loc})" if loc else msg
+        else:
+            detail = "config validation error"
+        raise HTTPException(status_code=400, detail=detail) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _resolve_active_host(config: Config) -> tuple[str, str, str, list[int]]:
@@ -83,7 +134,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     config = ConfigLoader.load()
     if config_overrides:
         config = config.model_validate(
-            _deep_merge(config.model_dump(by_alias=True), config_overrides)
+            deep_merge(config.model_dump(by_alias=True), config_overrides)
         )
 
     # Configure structured logging from .env
@@ -102,6 +153,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     # Create FastAPI app
     app = FastAPI(title="Switchyard API")
     app.add_exception_handler(RequestValidationError, _validation_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(PydanticValidationError, _resolver_handler)  # type: ignore[arg-type]
 
     # Add middleware
     app.add_middleware(RequestContextMiddleware)
@@ -164,7 +216,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         results: list[dict[str, Any]] = []
         for dep_name, dep_cfg in config.deployments.items():
-            resolved = resolve_deployment(config, dep_name)
+            resolved = _resolve_deployment(config, dep_name)
             result = manager.reconcile(dep_name, resolved)
 
             if result.info is not None:
@@ -197,7 +249,7 @@ def _register_routes(app: FastAPI) -> None:
         dep_cfg = config.deployments[deployment]
 
         # Resolve and reconcile
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         result = manager.reconcile(deployment, resolved)
 
         if result.info is not None:
@@ -236,7 +288,7 @@ def _register_routes(app: FastAPI) -> None:
             )
 
         # Resolve and reconcile
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         result = manager.reconcile(deployment, resolved)
 
         if result.info is not None:
@@ -264,6 +316,64 @@ def _register_routes(app: FastAPI) -> None:
 
         return resp
 
+    @app.get("/api/deployments/{deployment}/preview")
+    async def preview_deployment(deployment: str) -> dict[str, Any]:
+        """Preview the container launch spec for a deployment.
+
+        Returns the full structured launch configuration (image, command,
+        environment, mounts, network, port, placement) without launching
+        anything. Sensitive fields are redacted. SWITCHYARD_* process-local
+        env vars are excluded.
+
+        Port semantics:
+            - If deployment has a running container (loading/running/error),
+              returns the actual reconciled host port.
+            - If stopped/no container, returns host_port: null.
+            - port_range is always included for context.
+        """
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+
+        resolved = _resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
+
+        # Determine status fields
+        if result.info is not None:
+            host_port = result.info.port
+            deployment_status = result.info.status
+        else:
+            host_port = None
+            deployment_status = "stopped"
+
+        container_status = result.container_status
+
+        # Get adapter for this backend and build preview
+        adapter = manager._get_adapter(resolved.backend)
+        preview = adapter.build_preview_spec(
+            resolved,
+            host_port=host_port,
+            port_range=resolved.port_range,
+            deployment_status=deployment_status,
+            container_status=container_status,
+            docker_error=result.docker_error,
+        )
+
+        # Redact sensitive values in CLI command list (flag/value pairs)
+        preview["command"] = _redact_command_list(preview["command"])
+
+        # Redact sensitive values in environment dict, then exclude
+        # SWITCHYARD_* process-local settings from preview
+        preview["environment"] = {
+            k: v
+            for k, v in _mask_sensitive_args(preview["environment"]).items()
+            if not k.startswith("SWITCHYARD_")
+        }
+
+        return dict(preview)
+
     @app.post("/api/deployments/{deployment}/load", status_code=202)
     async def load_deployment(deployment: str) -> dict[str, Any]:
         """Load a deployment (async).
@@ -277,7 +387,7 @@ def _register_routes(app: FastAPI) -> None:
                 detail=f"deployment {deployment!r} not found in config",
             )
 
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
 
         try:
             info = await manager.load_model(deployment, resolved)
@@ -315,7 +425,7 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile first: if a running container exists after API restart,
         # adopt it into state so it can be stopped
-        resolved = resolve_deployment(config, deployment)
+        resolved = _resolve_deployment(config, deployment)
         manager.reconcile(deployment, resolved)
 
         try:
@@ -347,7 +457,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile to adopt running containers, clear stale state
         if deployment in config.deployments:
-            resolved = resolve_deployment(config, deployment)
+            resolved = _resolve_deployment(config, deployment)
             manager.reconcile(deployment, resolved)
 
         dep = _get_running_deployment(deployment, manager)
@@ -370,7 +480,7 @@ def _register_routes(app: FastAPI) -> None:
         """
         # Reconcile all configured deployments
         for dep_name in config.deployments:
-            resolved = resolve_deployment(config, dep_name)
+            resolved = _resolve_deployment(config, dep_name)
             manager.reconcile(dep_name, resolved)
             # Docker errors are informational — state preserved, don't clear
 
@@ -400,7 +510,7 @@ def _register_routes(app: FastAPI) -> None:
 
         # Reconcile to adopt running containers, clear stale state
         if deployment_name in config.deployments:
-            resolved = resolve_deployment(config, deployment_name)
+            resolved = _resolve_deployment(config, deployment_name)
             manager.reconcile(deployment_name, resolved)
             # Docker errors are informational — state preserved, don't clear
 
@@ -427,12 +537,12 @@ def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
 
     Normalizes keys by replacing '-' with '_' and redacts any key containing
     'token', 'secret', 'password', or 'api_key'. Handles nested dicts including
-    extra_args.
+    extra_args. Matching is case-insensitive.
     """
     sensitive_substrings = {"token", "secret", "password", "api_key"}
     masked: dict[str, Any] = {}
     for key, value in args.items():
-        normalized = key.replace("-", "_")
+        normalized = key.replace("-", "_").lower()
         if any(substr in normalized for substr in sensitive_substrings):
             masked[key] = "***redacted***"
         elif isinstance(value, dict):
@@ -440,6 +550,46 @@ def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
         else:
             masked[key] = value
     return masked
+
+
+def _redact_command_list(args: list[str]) -> list[str]:
+    """Redact sensitive values in a flat CLI command list.
+
+    Recognizes ``--flag value`` pairs where the flag name (normalized to
+    underscores) contains a sensitive substring. Replaces the value with
+    ``***redacted***``.
+
+    Only redacts the following value if it is not another flag (i.e., does not
+    start with ``-``). This prevents flag-only sensitive flags from swallowing
+    the next unrelated flag as a "value".
+
+    Args:
+        args: Flat CLI argument list (e.g. ``["--hf-token", "secret"]``).
+
+    Returns:
+        A new list with sensitive values redacted.
+    """
+    sensitive_substrings = {"token", "secret", "password", "api_key"}
+
+    redacted: list[str] = []
+    i = 0
+    while i < len(args):
+        token = args[i]
+        # Check if this looks like a flag whose name contains a sensitive substring
+        if token.startswith("--"):
+            normalized_name = token.replace("-", "_").lower()
+            if any(substr in normalized_name for substr in sensitive_substrings):
+                redacted.append(token)
+                # Only redact next token if it is a value, not another flag
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    redacted.append("***redacted***")
+                    i += 2
+                else:
+                    i += 1
+                continue
+        redacted.append(token)
+        i += 1
+    return redacted
 
 
 def _get_running_deployment(
@@ -594,12 +744,4 @@ async def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     )
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge override into base dict."""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+

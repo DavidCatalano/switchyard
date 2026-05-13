@@ -61,9 +61,9 @@ class TestVLLMAdapter:
             },
         })
         args = adapter._build_cli_args(runtime)
-        assert "--some_unknown_flag" in args
+        assert "--some-unknown-flag" in args
         assert "value1" in args
-        assert "--another_flag" in args
+        assert "--another-flag" in args
         assert "true" in args
 
     def test_build_cli_args_empty_extra(self, adapter: VLLMAdapter) -> None:
@@ -418,6 +418,62 @@ class TestVLLMAdapter:
         assert labels["switchyard.model"] == "test-model"
         assert labels["switchyard.runtime"] == "vllm"
         assert labels["switchyard.host"] == "test-host"
+
+    def test_start_container_options_cannot_override_owned_fields(
+        self, adapter: VLLMAdapter,
+    ) -> None:
+        """Container options cannot override Switchyard-owned fields.
+
+        User options for name, volumes, labels, and device_requests are
+        ignored when Switchyard-owned values are present.
+        """
+        resolved = ResolvedDeployment(
+            deployment_name="override-test",
+            model_name="test-model",
+            runtime_name="vllm",
+            backend="vllm",
+            host_name="test-host",
+            backend_host="localhost",
+            backend_scheme="http",
+            port_range=[9800, 9900],
+            image="vllm/vllm-openai:latest",
+            internal_port=8000,
+            model_host_path="/host/models",
+            model_container_path="/models",
+            accelerator_ids=["0"],
+            docker_host=None,
+            docker_network="model-runtime",
+            runtime_args={"model": "/models/test"},
+            container_environment={},
+            container_options={
+                "name": "evil-name",
+                "volumes": {"/evil": {"bind": "/evil", "mode": "rw"}},
+                "device_requests": [],
+                "custom_option": "custom_value",
+            },
+            store_mounts={"/host/models": {"bind": "/models", "mode": "ro"}},
+            model_defaults=None,
+            health_timeout_seconds=300.0,
+        )
+        mock_container = MagicMock()
+        mock_container.short_id = "override123"
+        mock_containers = MagicMock()
+        mock_containers.run.return_value = mock_container
+        mock_client = MagicMock()
+        mock_client.containers = mock_containers
+        adapter._docker_client = mock_client
+
+        adapter.start(resolved, 9020)
+
+        call_kwargs = mock_containers.run.call_args.kwargs
+        # Switchyard-owned fields always win
+        assert call_kwargs["name"] == "switchyard-override-test"
+        expected_volumes = {"/host/models": {"bind": "/models", "mode": "ro"}}
+        assert call_kwargs["volumes"] == expected_volumes
+        assert len(call_kwargs["device_requests"]) == 1
+        assert call_kwargs["device_requests"][0].device_ids == ["0"]
+        # Custom user options are preserved
+        assert call_kwargs["custom_option"] == "custom_value"
 
     def test_start_container_name_format(self, adapter: VLLMAdapter) -> None:
         """Container name is switchyard-{deployment_name}."""
