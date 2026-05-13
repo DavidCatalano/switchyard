@@ -157,6 +157,22 @@ class LifecycleManager:
             return ReconcileResult(
                 info=None, container_status=status
             )
+        except ConnectionError:
+            # Docker daemon unreachable — expected in dev/test, no traceback
+            logger.warning(
+                "reconcile: Docker daemon unreachable for %s; "
+                "preserving in-memory state",
+                deployment_name,
+            )
+            try:
+                info = self.state.get(deployment_name)
+            except KeyError:
+                info = None
+            return ReconcileResult(
+                info=info,
+                container_status="unknown",
+                docker_error="Docker daemon is not reachable",
+            )
         except docker.errors.DockerException as exc:
             logger.warning(
                 "reconcile: Docker operation failed for %s: %s",
