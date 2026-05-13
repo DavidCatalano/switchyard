@@ -74,40 +74,38 @@ the OpenAI-compatible API surface.
 
 GitHub issue: #3
 
-Complete. Finish the deployment lifecycle migration that SEP-002 largely enabled. The
-resolver already produces adapter-ready deployments, resolves source/store
-paths, merges runtime/model/deployment cascades, and translates placement into
-container launch behavior. SEP-003 should focus on the remaining lifecycle and
-API work:
-
-- Replace body-based lifecycle routes with deployment-resource routes:
-- Reconcile in-memory deployment state with actual Docker container state before
-  rejecting loads or reporting status.
+Complete. Finished the deployment lifecycle migration: replaced body-based
+lifecycle routes with deployment-resource routes, reconciled in-memory state
+with Docker container state, resolved source/store paths, merged cascades,
+and translated placement into container launch behavior.
 
 ### SEP-003a — Health-Aware Deployment Status
 
 GitHub issue: #3
 
-In final review. Corrects the invariant that Switchyard `running` means
-backend health has succeeded. Reconciliation adopts Docker-running
-containers as `loading` with background health polling. `ReconcileResult`
-carries `container_status` and `docker_error` for diagnostic visibility.
-Health timeout is configurable via first-class `health_timeout_seconds`
-with cascade resolution.
-
-
-## Planned Work
+Complete. Corrected the invariant that Switchyard `running` means backend
+health has succeeded. Reconciliation adopts Docker-running containers as
+`loading` with background health polling. `ReconcileResult` carries
+`container_status` and `docker_error` for diagnostic visibility. Health
+timeout is configurable via first-class `health_timeout_seconds` with
+cascade resolution.
 
 ### SEP-004 — Runtime Resolver Hardening
 
 GitHub issue: #4
 
-Harden runtime-specific launch behavior without chasing every backend CLI flag.
-For vLLM, maintain a small typed core for high-value fields, require unknown
-backend flags to live under `extra_args`, fail loudly on typos in typed layers,
-and provide generated command previews for validation and operator confidence.
+Complete. Hardened runtime-specific launch behavior: `extra: "forbid"` on
+`VLLMRuntimeConfig` (typos fail at resolution), structural `switchyard_only`
+field metadata (no hardcoded CLI skip list), deep merge for nested dicts,
+`null` as wipe signal, cascade provenance tracking, and
+`GET /api/deployments/{deployment}/preview` returning structured JSON
+container launch spec. `_compute_common_launch_fields()` shared by launch
+and preview mitigates drift.
 
 Planning reference: `SEP-001-04-CONTEXT-vllm-config.md`
+
+
+## Planned Work
 
 ### SEP-005 — Read APIs and Diagnostics
 
