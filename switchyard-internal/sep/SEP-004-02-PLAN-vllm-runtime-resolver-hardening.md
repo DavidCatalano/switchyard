@@ -50,17 +50,18 @@ Key existing code to work from:
 **Goal**: Replace shallow `dict.update` cascade merge with deep merge for nested dicts, preserving last-in-wins at top level.
 
 #### Tasks
-- [ ] **B1**: Create `switchyard/core/merge.py` with `_deep_merge` utility. Extract from `app.py:597+` to neutral module to avoid import cycle (`app.py` imports from `loader.py`). Update `app.py` and `loader.py` to import from new module.
+- [x] **B1**: Create `switchyard/core/merge.py` with `_deep_merge` utility. Extract from `app.py:597+` to neutral module to avoid import cycle (`app.py` imports from `loader.py`). Update `app.py` and `loader.py` to import from new module.
   - Test: `test_config_resolution.py` — `_deep_merge` behaves identically to old `app.py` version
   - Test: `test_config_resolution.py` — partial `speculative_config` override at deployment level retains runtime-level keys (e.g., runtime provides `method`, deployment overrides `num_speculative_tokens`, result has both)
-- [ ] **B1.5**: Extend `_deep_merge` to support `null` as wipe signal. If override value is `None`/`null`, the key is removed from result (equivalent to Helm/Kustomize null semantics).
+- [x] **B1.5**: Extend `_deep_merge` to support `null` as wipe signal. If override value is `None`/`null` and the base has a nested dict for that key, the key is removed from result (equivalent to Helm/Kustomize `null` semantics). Scalar `null` is rejected with `ValueError`.
   - Test: `test_config_resolution.py` — `speculative_config: null` at deployment level wipes all lower-layer entries
-- [ ] **B2**: Replace `merged.update(layer)` in `_merge_runtime_args` (loader.py) with `_deep_merge`. Apply to all four cascade layers including `extra_args` (which now deep-merges instead of replacing).
+  - Test: `test_config_resolution.py` — scalar `null` raises `ValueError`
+- [x] **B2**: Replace `merged.update(layer)` in `_merge_runtime_args` (loader.py) with `_deep_merge`. Apply to all four cascade layers including `extra_args` (which now deep-merges instead of replacing).
   - Test: `test_config_resolution.py` — partial `speculative_config` override at deployment level retains runtime-level keys (e.g., runtime provides `method`, deployment overrides `num_speculative_tokens`, result has both)
-- [ ] **B2.5**: Verify cascade order is `model.defaults → runtime.defaults → model.runtime_defaults → deployment.runtime_overrides` (matches code, per PRD rationale). Add explicit docstring to `_merge_runtime_args` documenting the order and rationale.
+  - Test: `test_config_resolution.py` — `extra_args` in runtime.defaults and deployment.extra_args are deep-merged
+- [x] **B2.5**: Verify cascade order is `model.defaults → runtime.defaults → model.runtime_defaults → deployment.runtime_overrides` (matches code, per PRD rationale). Add explicit docstring to `_merge_runtime_args` documenting the order and rationale.
   - Test: `test_config_resolution.py` — known field at each layer verifies last-in-wins; top-level `dtype` from runtime.defaults wins over model.defaults
-- [ ] **B3**: **Cascade provenance tracking** — build a parallel `dict[str, str]` mapping each merged key to its source layer name. Surface in error messages when `extra: "forbid"` rejects a key, so diagnostics name the source layer (e.g., "unknown key 'max_seqs' in deployment.runtime_overrides").
-  - Implementation: track provenance during merge loop; on `ValidationError`, walk the provenance map to attach layer context to the error message.
+- [x] **B3**: **Cascade provenance tracking** — `_merge_runtime_args` now returns `(merged, provenance)` where provenance maps each top-level key to its source layer name. On `ValidationError`, `resolve_deployment()` enriches the error with a `ValueError` naming the source layer (e.g., "Extra inputs are not permitted for field 'max_seqs' in deployment.runtime_overrides"). `_resolve_deployment()` in `app.py` catches both `PydanticValidationError` and `ValueError` and converts them to HTTP 400.
   - Test: `test_config_resolution.py` — typo error message contains source layer name
 
 ### Phase 3: Preview API
@@ -161,3 +162,9 @@ Key existing code to work from:
   - **Finding 1**: Reverted container_options merge order in `start()` — user options applied first, Switchyard-owned fields force-applied after. Added regression test.
   - **Finding 2**: Added `_resolve_deployment()` helper wrapping `resolve_deployment()` in all API routes. Converts `PydanticValidationError` → HTTP 400 with field-level detail. Added 2 API integration tests.
   - **Finding 3**: Split `LaunchSpec` (Docker SDK types) from `PreviewSpec` (JSON-serializable, Switchyard domain language). Added `build_preview_spec()` method.
+
+- 2026-05-12 — Phase 2 cascade contract decisions (Agreed):
+  - **extra_args in all layers**: Support `extra_args` keys in all four typed runtime-arg layers (model.defaults, runtime.defaults, model.runtime_defaults, deployment.runtime_overrides), deep-merged naturally by `_deep_merge`. `deployment.extra_args` is then deep-merged on top.
+  - **Null as wipe**: `null` for a nested dict field wipes the entire block (key removed from result), matching Helm/Kustomize semantics. Scalar `null` is **rejected** with `ValueError` — operators should omit the key to inherit, or set a real value.
+  - **Provenance granularity**: Track provenance at top-level field granularity only. Nested dict key provenance is unnecessary since Pydantic's own error messages already name the field path within `VLLMRuntimeConfig`.
+  - **_deep_merge extraction**: Extracted from `app.py` to `switchyard/core/merge.py` to avoid import cycles. Both `app.py` and `loader.py` import from the neutral module.

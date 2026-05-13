@@ -23,6 +23,7 @@ from switchyard.adapters.vllm import register_vllm
 from switchyard.config.loader import ConfigLoader, resolve_deployment
 from switchyard.config.models import AppSettings, Config
 from switchyard.core.lifecycle import LifecycleManager
+from switchyard.core.merge import deep_merge
 from switchyard.core.ports import PortAllocator
 from switchyard.logging import RequestContextMiddleware, configure_logging
 
@@ -66,11 +67,11 @@ def _resolve_deployment(
     config: Config,
     deployment: str,
 ) -> Any:
-    """Resolve deployment, converting ValidationError to HTTP 400.
+    """Resolve deployment, converting resolution errors to HTTP 400.
 
     Wraps ``resolve_deployment()`` so that Pydantic validation errors
-    from runtime config typos surface as clear 400 responses rather
-    than 500 errors.
+    from runtime config typos and ``ValueError`` from merge issues
+    surface as clear 400 responses rather than 500 errors.
     """
     try:
         return resolve_deployment(config, deployment)
@@ -84,6 +85,8 @@ def _resolve_deployment(
         else:
             detail = "config validation error"
         raise HTTPException(status_code=400, detail=detail) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def _resolve_active_host(config: Config) -> tuple[str, str, str, list[int]]:
@@ -131,7 +134,7 @@ def create_app(config_overrides: dict[str, Any] | None = None) -> FastAPI:
     config = ConfigLoader.load()
     if config_overrides:
         config = config.model_validate(
-            _deep_merge(config.model_dump(by_alias=True), config_overrides)
+            deep_merge(config.model_dump(by_alias=True), config_overrides)
         )
 
     # Configure structured logging from .env
@@ -643,12 +646,4 @@ async def _streaming_proxy(url: str, body: dict[str, Any]) -> Any:
     )
 
 
-def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
-    """Recursively merge override into base dict."""
-    result = base.copy()
-    for key, value in override.items():
-        if key in result and isinstance(result[key], dict) and isinstance(value, dict):
-            result[key] = _deep_merge(result[key], value)
-        else:
-            result[key] = value
-    return result
+
