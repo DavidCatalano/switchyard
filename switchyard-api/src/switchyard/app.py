@@ -316,6 +316,64 @@ def _register_routes(app: FastAPI) -> None:
 
         return resp
 
+    @app.get("/api/deployments/{deployment}/preview")
+    async def preview_deployment(deployment: str) -> dict[str, Any]:
+        """Preview the container launch spec for a deployment.
+
+        Returns the full structured launch configuration (image, command,
+        environment, mounts, network, port, placement) without launching
+        anything. Sensitive fields are redacted. SWITCHYARD_* process-local
+        env vars are excluded.
+
+        Port semantics:
+            - If deployment has a running container (loading/running/error),
+              returns the actual reconciled host port.
+            - If stopped/no container, returns host_port: null.
+            - port_range is always included for context.
+        """
+        if deployment not in config.deployments:
+            raise HTTPException(
+                status_code=404,
+                detail=f"deployment {deployment!r} not found in config",
+            )
+
+        resolved = _resolve_deployment(config, deployment)
+        result = manager.reconcile(deployment, resolved)
+
+        # Determine status fields
+        if result.info is not None:
+            host_port = result.info.port
+            deployment_status = result.info.status
+        else:
+            host_port = None
+            deployment_status = "stopped"
+
+        container_status = result.container_status
+
+        # Get adapter for this backend and build preview
+        adapter = manager._get_adapter(resolved.backend)
+        preview = adapter.build_preview_spec(
+            resolved,
+            host_port=host_port,
+            port_range=resolved.port_range,
+            deployment_status=deployment_status,
+            container_status=container_status,
+            docker_error=result.docker_error,
+        )
+
+        # Redact sensitive values in CLI command list (flag/value pairs)
+        preview["command"] = _redact_command_list(preview["command"])
+
+        # Redact sensitive values in environment dict, then exclude
+        # SWITCHYARD_* process-local settings from preview
+        preview["environment"] = {
+            k: v
+            for k, v in _mask_sensitive_args(preview["environment"]).items()
+            if not k.startswith("SWITCHYARD_")
+        }
+
+        return dict(preview)
+
     @app.post("/api/deployments/{deployment}/load", status_code=202)
     async def load_deployment(deployment: str) -> dict[str, Any]:
         """Load a deployment (async).
@@ -479,12 +537,12 @@ def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
 
     Normalizes keys by replacing '-' with '_' and redacts any key containing
     'token', 'secret', 'password', or 'api_key'. Handles nested dicts including
-    extra_args.
+    extra_args. Matching is case-insensitive.
     """
     sensitive_substrings = {"token", "secret", "password", "api_key"}
     masked: dict[str, Any] = {}
     for key, value in args.items():
-        normalized = key.replace("-", "_")
+        normalized = key.replace("-", "_").lower()
         if any(substr in normalized for substr in sensitive_substrings):
             masked[key] = "***redacted***"
         elif isinstance(value, dict):
@@ -492,6 +550,46 @@ def _mask_sensitive_args(args: dict[str, Any]) -> dict[str, Any]:
         else:
             masked[key] = value
     return masked
+
+
+def _redact_command_list(args: list[str]) -> list[str]:
+    """Redact sensitive values in a flat CLI command list.
+
+    Recognizes ``--flag value`` pairs where the flag name (normalized to
+    underscores) contains a sensitive substring. Replaces the value with
+    ``***redacted***``.
+
+    Only redacts the following value if it is not another flag (i.e., does not
+    start with ``-``). This prevents flag-only sensitive flags from swallowing
+    the next unrelated flag as a "value".
+
+    Args:
+        args: Flat CLI argument list (e.g. ``["--hf-token", "secret"]``).
+
+    Returns:
+        A new list with sensitive values redacted.
+    """
+    sensitive_substrings = {"token", "secret", "password", "api_key"}
+
+    redacted: list[str] = []
+    i = 0
+    while i < len(args):
+        token = args[i]
+        # Check if this looks like a flag whose name contains a sensitive substring
+        if token.startswith("--"):
+            normalized_name = token.replace("-", "_").lower()
+            if any(substr in normalized_name for substr in sensitive_substrings):
+                redacted.append(token)
+                # Only redact next token if it is a value, not another flag
+                if i + 1 < len(args) and not args[i + 1].startswith("-"):
+                    redacted.append("***redacted***")
+                    i += 2
+                else:
+                    i += 1
+                continue
+        redacted.append(token)
+        i += 1
+    return redacted
 
 
 def _get_running_deployment(

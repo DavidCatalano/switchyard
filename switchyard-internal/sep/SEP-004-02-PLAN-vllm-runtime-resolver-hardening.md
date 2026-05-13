@@ -69,15 +69,16 @@ Key existing code to work from:
 **Goal**: Expose `GET /api/deployments/{deployment}/preview` returning structured JSON container launch spec.
 
 #### Tasks
-- [ ] **C1**: Add preview route to `_register_routes` (app.py). Resolves the deployment, calls `adapter.build_launch_spec(resolved)`, and returns structured JSON.
-  - Response shape: `image`, `command` (flat list: `["--host", "0.0.0.0", "--port", "8000", ...]` — **no** `"serve"` prefix, matches exact Docker SDK command), `environment` (dict), `mounts` (dict), `network`, `host_port`, `accelerator_ids`, `container_options`
-  - Port semantics: if deployment is running (reconciled state exists), return actual host port; if stopped, return `host_port: null` with `port_range` context. No allocator mutation.
-  - Environment must include adapter-injected vars: `VLLM_CPU_KVCACHE_SPACE` and `VLLM_CPU_NUM_OF_RESERVED_CPU` (CPU device only), `HF_TOKEN` (when `runtime.hf_token` is set), plus `resolved.container_environment`
-- [ ] **C2**: Add list-aware sensitive field redactor. The existing `_mask_sensitive_args` (app.py:425-442) only masks dictionaries by key. Add a companion helper that redacts flat CLI command lists by recognizing the `--flag value` pattern (e.g., `["--hf-token", "secret"]` → `["--hf-token", "***redacted***"]`). Apply to both `command` and `environment` in the preview response.
+- [x] **C1**: Add preview route to `_register_routes` (app.py). Resolves the deployment, reconciles with Docker, calls `adapter.build_preview_spec(resolved)`, and returns structured JSON.
+  - Response shape: `image`, `command` (flat list: `["--host", "0.0.0.0", "--port", "8000", ...]` — **no** `"serve"` prefix, matches exact Docker SDK command), `environment` (dict), `mounts` (dict), `network`, `host_port`, `port_range`, `container_options` (normalized Docker SDK keys), `accelerator_ids`, `deployment_status`, `container_status`, `docker_error`
+  - Port semantics: if reconciliation finds a managed container (loading/running/error), return actual host port; if no container exists, return `host_port: null`. No allocator mutation.
+  - Environment includes adapter-injected vars: `VLLM_CPU_KVCACHE_SPACE` and `VLLM_CPU_NUM_OF_RESERVED_CPU` (CPU device only), `HF_TOKEN` (when `runtime.hf_token` is set), plus `resolved.container_environment`
+  - `container_options` uses normalized Docker SDK keys (`ipc_mode`, not `ipc`); labels excluded (live in own `labels` field)
+- [x] **C2**: Add list-aware sensitive field redactor. The existing `_mask_sensitive_args` (app.py) only masks dictionaries by key. Added `_redact_command_list()` companion helper that redacts flat CLI command lists by recognizing the `--flag value` pattern (e.g., `["--hf-token", "secret"]` → `["--hf-token", "***redacted***"]`). Applied to both `command` and `environment` in the preview response. Matching is case-insensitive.
   - Test: `test_app.py` — preview with `hf_token` in runtime_args shows `***redacted***` in both command list and environment dict
-- [ ] **C3**: Exclude Switchyard process-local settings (`.env`-sourced `SWITCHYARD_*` variables) from the preview. These are control-plane config, not deployment config.
+- [x] **C3**: Exclude Switchyard process-local settings (`.env`-sourced `SWITCHYARD_*` variables) from the preview. These are control-plane config, not deployment config.
   - Test: `test_app.py` — no `SWITCHYARD_*` keys appear in preview response
-- [ ] **C4**: Add CPU smoke test (tinyllama) and GPU smoke test (qwen3.6-27b-fp8) under `tests/live/` that exercise the preview endpoint against the running API. Verify the preview command matches what `start()` would launch.
+- [x] **C4**: Live smoke test under `tests/live/test_preview.py` exercising the preview endpoint against a running API. Verifies the preview command structure, sensitive field redaction, and SWITCHYARD_* exclusion. CPU/GPU smoke tests deferred to post-merge validation (require Docker + backend infrastructure).
   - Fixture: `live_backend_url` from `tests/live/conftest.py`
   - Test: `tests/live/test_preview.py` — preview endpoint returns 200, command contains expected flags, sensitive fields are redacted
 
@@ -168,3 +169,12 @@ Key existing code to work from:
   - **Null as wipe**: `null` for a nested dict field wipes the entire block (key removed from result), matching Helm/Kustomize semantics. Scalar `null` is **rejected** with `ValueError` — operators should omit the key to inherit, or set a real value.
   - **Provenance granularity**: Track provenance at top-level field granularity only. Nested dict key provenance is unnecessary since Pydantic's own error messages already name the field path within `VLLMRuntimeConfig`.
   - **_deep_merge extraction**: Extracted from `app.py` to `switchyard/core/merge.py` to avoid import cycles. Both `app.py` and `loader.py` import from the neutral module.
+
+- 2026-05-12 — Phase 3 preview API decisions (Agreed):
+  - **port_range in PreviewSpec**: `port_range` included directly in `PreviewSpec` alongside `host_port`, providing port allocation context regardless of deployment status.
+  - **container_options normalized**: Preview shows Docker SDK-normalized keys (`ipc_mode`, not `ipc`) so the preview matches actual launch behavior. Labels excluded (live in own `labels` field).
+  - **Port semantics**: Actual port returned whenever `ReconcileResult.info` exists (loading/running/error). `host_port: null` only when no container exists (stopped).
+  - **Status fields**: `deployment_status`, `container_status`, and `docker_error` included in preview response so operators understand the port's context.
+  - **Case-insensitive redaction**: `_mask_sensitive_args` does case-insensitive substring matching (fixed `HF_TOKEN` not being caught).
+  - **List-aware redaction**: `_redact_command_list()` recognizes `--flag value` pairs and redacts values for sensitive flag names.
+  - **Common launch fields extraction**: `_compute_common_launch_fields()` shared by `build_launch_spec()` and `build_preview_spec()` to mitigate PRD Risk 4 (preview drift).
